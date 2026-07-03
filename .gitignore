@@ -12,3 +12,4 @@ bender
 todo
 .venv
 modelsim.ini
+**/*.~undo-tree~

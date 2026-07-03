@@ -41,9 +41,3 @@ jobs:
     needs: build
     uses: ./.github/workflows/gitlab-ci.yml
     secrets: inherit
-
-  deploy:
-    needs: build
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/deploy.yml
-    secrets: inherit
