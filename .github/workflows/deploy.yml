@@ -38,7 +38,7 @@ jobs:
         version: 0.32.0
     -
       name: Build hardware
-      run: uv run --locked make -B idma_hw_all
+      run: uv run --locked make -B idma_hw_all idma_sw_all
     -
       name: Deploy generated files
       run: |
