@@ -44,7 +44,7 @@ IDMA_OCCAMY_IDS  := \
 IDMA_ADD_IDS     ?=
 IDMA_BACKEND_IDS ?= $(IDMA_BASE_IDS) $(IDMA_OCCAMY_IDS) $(IDMA_ADD_IDS)
 # Compute-hosting variants (single AXI write); empty default = stock has no compute
-IDMA_VIDMA_IDS   ?= rw_axi
+IDMA_VIDMA_IDS   ?=
 # Compute variants (strip the optional :op:fd suffix) must be built backends
 _idma_vidma_unknown := $(filter-out $(IDMA_BACKEND_IDS),\
 	$(foreach c,$(IDMA_VIDMA_IDS),$(firstword $(subst :, ,$(c)))))
