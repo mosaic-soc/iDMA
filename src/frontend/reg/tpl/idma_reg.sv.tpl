@@ -6,7 +6,26 @@
 // - Michael Rogenmoser <michaero@iis.ee.ethz.ch>
 // - Thomas Benz <tbenz@iis.ee.ethz.ch>
 
+<%
+    # Config-bus CPUIF family, derived from --cpuif (idma.mk IDMA_REG_CPUIF). The wrapper packs
+    # the PeakRDL reg_top's flat CPUIF signals into the matching req/rsp struct; the reg_top is
+    # generated with the same --cpuif so its port set matches the branch selected here.
+    if cpuif.startswith('apb'):
+        _fam = 'apb'
+    elif cpuif.startswith('obi'):
+        _fam = 'obi'
+    elif cpuif.startswith('axi4-lite'):
+        _fam = 'axil'
+    else:
+        raise Exception("idma_reg.sv.tpl: unsupported register CPUIF '%s' (add a branch)" % cpuif)
+%>\
+% if _fam == 'apb':
 `include "apb/typedef.svh"
+% elif _fam == 'obi':
+`include "obi/typedef.svh"
+% elif _fam == 'axil':
+`include "axi/typedef.svh"
+% endif
 
 /// Description: Register-based front-end for iDMA
 module idma_${identifier} #(
@@ -18,10 +37,22 @@ module idma_${identifier} #(
   parameter int unsigned IdCounterWidth = 32'd32,
   /// Dependent parameter: Stream Idx
   parameter int unsigned StreamWidth    = cf_math_pkg::idx_width(NumStreams),
-  /// Register_interface request type
-  parameter type         reg_req_t      = logic,
-  /// Register_interface response type
-  parameter type         reg_rsp_t      = logic,
+% if _fam == 'apb':
+  /// APB4 request type
+  parameter type         apb_req_t      = logic,
+  /// APB4 response type
+  parameter type         apb_rsp_t      = logic,
+% elif _fam == 'obi':
+  /// OBI request type
+  parameter type         obi_req_t      = logic,
+  /// OBI response type
+  parameter type         obi_rsp_t      = logic,
+% elif _fam == 'axil':
+  /// AXI4-Lite request type
+  parameter type         axi_lite_req_t = logic,
+  /// AXI4-Lite response type
+  parameter type         axi_lite_rsp_t = logic,
+% endif
   /// DMA 1d or ND burst request type
   parameter type         dma_req_t      = logic,
   /// Dependent type for IdCounterWidth
@@ -31,9 +62,17 @@ module idma_${identifier} #(
 ) (
   input  logic clk_i,
   input  logic rst_ni,
-  /// Register interface control slave
-  input  reg_req_t [NumRegs-1:0] dma_ctrl_req_i,
-  output reg_rsp_t [NumRegs-1:0] dma_ctrl_rsp_o,
+  /// Configuration control slave (${cpuif})
+% if _fam == 'apb':
+  input  apb_req_t [NumRegs-1:0] dma_ctrl_req_i,
+  output apb_rsp_t [NumRegs-1:0] dma_ctrl_rsp_o,
+% elif _fam == 'obi':
+  input  obi_req_t [NumRegs-1:0] dma_ctrl_req_i,
+  output obi_rsp_t [NumRegs-1:0] dma_ctrl_rsp_o,
+% elif _fam == 'axil':
+  input  axi_lite_req_t [NumRegs-1:0] dma_ctrl_req_i,
+  output axi_lite_rsp_t [NumRegs-1:0] dma_ctrl_rsp_o,
+% endif
   /// Request signals
   output dma_req_t   dma_req_o,
   output logic       req_valid_o,
@@ -51,85 +90,102 @@ module idma_${identifier} #(
   localparam int unsigned MaxNumStreams = 32'd16;
   localparam int unsigned RegAddrWidth  = idma_${identifier}_reg_pkg::IDMA_${identifier.upper()}_REG_TOP_MIN_ADDR_WIDTH;
 
-  `APB_TYPEDEF_ALL(apb, logic[31:0], logic[31:0], logic[3:0])
-  apb_req_t  [NumRegs-1:0] apb_req;
-  apb_resp_t [NumRegs-1:0] apb_rsp;
-
-
   // register connections
   idma_${identifier}_reg_pkg::idma_reg__out_t dma_reg2hw [NumRegs-1:0];
   idma_${identifier}_reg_pkg::idma_reg__in_t  dma_hw2reg [NumRegs-1:0];
 
   // arbitration output
-  dma_req_t [NumRegs-1:0] arb_dma_req;
-  logic     [NumRegs-1:0] arb_valid;
-  logic     [NumRegs-1:0] arb_ready;
+  typedef struct packed {
+    dma_req_t req;
+    stream_t  stream_idx;
+  } arb_payload_t;
 
-  // register signals
-  reg_rsp_t [NumRegs-1:0] dma_ctrl_rsp;
+  arb_payload_t [NumRegs-1:0] arb_payload;
+  arb_payload_t               arb_payload_out;
+  stream_t      [NumRegs-1:0] arb_stream_idx;
+  logic         [NumRegs-1:0] arb_valid;
+  logic         [NumRegs-1:0] arb_ready;
 
-  always_comb begin
-      stream_idx_o = '0;
-      for (int r = 0; r < NumRegs; r++) begin
-          for (int c = 0; c < NumStreams; c++) begin
-              if (dma_reg2hw[r].next_id[c].req && !dma_reg2hw[r].next_id[c].req_is_wr) begin
-                  stream_idx_o = c;
-              end
-          end
-      end
-  end
+  assign dma_req_o    = arb_payload_out.req;
+  assign stream_idx_o = arb_payload_out.stream_idx;
 
   // generate the registers
   for (genvar i = 0; i < NumRegs; i++) begin : gen_core_regs
 
 
-    reg_to_apb #(
-      .reg_req_t  ( reg_req_t ),
-      .reg_rsp_t  ( reg_rsp_t ),
-      .apb_req_t  ( apb_req_t ),
-      .apb_rsp_t  ( apb_resp_t )
-    ) chs_regs_reg_to_apb (
-      .clk_i,
-      .rst_ni,
-      .reg_req_i ( dma_ctrl_req_i   [i] ),
-      .reg_rsp_o ( dma_ctrl_rsp     [i] ),
-      .apb_req_o ( apb_req          [i] ),
-      .apb_rsp_i ( apb_rsp          [i] )
-    );
-
+% if _fam == 'obi':
+    // override the reg_top ID width so s_obi_aid/s_obi_rid match the OBI bus id width
+    idma_${identifier}_reg_top #(
+      .ID_WIDTH ( $bits(dma_ctrl_req_i[i].a.aid) )
+    ) i_idma_${identifier}_reg_top (
+% else:
     idma_${identifier}_reg_top i_idma_${identifier}_reg_top (
+% endif
       .clk    ( clk_i ),
       .arst_n ( rst_ni ),
 
-      .s_apb_psel    (apb_req[i].psel),
-      .s_apb_penable (apb_req[i].penable),
-      .s_apb_pwrite  (apb_req[i].pwrite),
-      .s_apb_pprot   (apb_req[i].pprot),
-      .s_apb_paddr   (apb_req[i].paddr[RegAddrWidth-1:0]),
-      .s_apb_pwdata  (apb_req[i].pwdata),
-      .s_apb_pstrb   (apb_req[i].pstrb),
-      .s_apb_pready  (apb_rsp[i].pready),
-      .s_apb_prdata  (apb_rsp[i].prdata),
-      .s_apb_pslverr (apb_rsp[i].pslverr),
+% if _fam == 'apb':
+      .s_apb_psel    ( dma_ctrl_req_i[i].psel                    ),
+      .s_apb_penable ( dma_ctrl_req_i[i].penable                 ),
+      .s_apb_pwrite  ( dma_ctrl_req_i[i].pwrite                  ),
+      .s_apb_pprot   ( dma_ctrl_req_i[i].pprot                   ),
+      .s_apb_paddr   ( dma_ctrl_req_i[i].paddr[RegAddrWidth-1:0] ),
+      .s_apb_pwdata  ( dma_ctrl_req_i[i].pwdata                  ),
+      .s_apb_pstrb   ( dma_ctrl_req_i[i].pstrb                   ),
+      .s_apb_pready  ( dma_ctrl_rsp_o[i].pready                  ),
+      .s_apb_prdata  ( dma_ctrl_rsp_o[i].prdata                  ),
+      .s_apb_pslverr ( dma_ctrl_rsp_o[i].pslverr                 ),
+% elif _fam == 'obi':
+      .s_obi_req     ( dma_ctrl_req_i[i].req                     ),
+      .s_obi_gnt     ( dma_ctrl_rsp_o[i].gnt                     ),
+      .s_obi_addr    ( dma_ctrl_req_i[i].a.addr[RegAddrWidth-1:0] ),
+      .s_obi_we      ( dma_ctrl_req_i[i].a.we                    ),
+      .s_obi_be      ( dma_ctrl_req_i[i].a.be                    ),
+      .s_obi_wdata   ( dma_ctrl_req_i[i].a.wdata                 ),
+      .s_obi_aid     ( dma_ctrl_req_i[i].a.aid                   ),
+      .s_obi_rvalid  ( dma_ctrl_rsp_o[i].rvalid                  ),
+      .s_obi_rready  ( dma_ctrl_req_i[i].rready                  ),
+      .s_obi_rdata   ( dma_ctrl_rsp_o[i].r.rdata                 ),
+      .s_obi_err     ( dma_ctrl_rsp_o[i].r.err                   ),
+      .s_obi_rid     ( dma_ctrl_rsp_o[i].r.rid                   ),
+% elif _fam == 'axil':
+      .s_axil_awvalid ( dma_ctrl_req_i[i].aw_valid                  ),
+      .s_axil_awready ( dma_ctrl_rsp_o[i].aw_ready                  ),
+      .s_axil_awaddr  ( dma_ctrl_req_i[i].aw.addr[RegAddrWidth-1:0] ),
+      .s_axil_awprot  ( dma_ctrl_req_i[i].aw.prot                   ),
+      .s_axil_wvalid  ( dma_ctrl_req_i[i].w_valid                   ),
+      .s_axil_wready  ( dma_ctrl_rsp_o[i].w_ready                   ),
+      .s_axil_wdata   ( dma_ctrl_req_i[i].w.data                    ),
+      .s_axil_wstrb   ( dma_ctrl_req_i[i].w.strb                    ),
+      .s_axil_bvalid  ( dma_ctrl_rsp_o[i].b_valid                   ),
+      .s_axil_bready  ( dma_ctrl_req_i[i].b_ready                   ),
+      .s_axil_bresp   ( dma_ctrl_rsp_o[i].b.resp                    ),
+      .s_axil_arvalid ( dma_ctrl_req_i[i].ar_valid                  ),
+      .s_axil_arready ( dma_ctrl_rsp_o[i].ar_ready                  ),
+      .s_axil_araddr  ( dma_ctrl_req_i[i].ar.addr[RegAddrWidth-1:0] ),
+      .s_axil_arprot  ( dma_ctrl_req_i[i].ar.prot                   ),
+      .s_axil_rvalid  ( dma_ctrl_rsp_o[i].r_valid                   ),
+      .s_axil_rready  ( dma_ctrl_req_i[i].r_ready                   ),
+      .s_axil_rdata   ( dma_ctrl_rsp_o[i].r.data                    ),
+      .s_axil_rresp   ( dma_ctrl_rsp_o[i].r.resp                    ),
+% endif
 
       .hwif_out  ( dma_reg2hw       [i] ),
       .hwif_in   ( dma_hw2reg       [i] )
     );
 
     logic read_happens;
-    // DMA backpressure
-    always_comb begin : proc_dma_backpressure
-      // ready signal
-      dma_ctrl_rsp_o[i]       = dma_ctrl_rsp[i];
-      dma_ctrl_rsp_o[i].ready = read_happens ? arb_ready[i] : dma_ctrl_rsp[i];
-    end
-
-    // valid signals
+    // launch-stall: hold the reg read-ack until the arbiter accepts the request
+    // (protocol-agnostic — driven into hwif rd_ack below, see gen_hw2reg_connections)
 
     always_comb begin : proc_launch
         read_happens = 1'b0;
+        arb_stream_idx[i] = '0;
         for (int c = 0; c < NumStreams; c++) begin
-            read_happens |= dma_reg2hw[i].next_id[c].req & ~dma_reg2hw[i].next_id[c].req_is_wr;
+            if (dma_reg2hw[i].next_id[c].req & ~dma_reg2hw[i].next_id[c].req_is_wr) begin
+                read_happens = 1'b1;
+                arb_stream_idx[i] = stream_t'(c);
+            end
         end
         arb_valid[i] = read_happens;
     end
@@ -137,51 +193,52 @@ module idma_${identifier} #(
     // assign request struct
     always_comb begin : proc_hw_req_conv
       // all fields are zero per default
-      arb_dma_req[i] = '0;
+      arb_payload[i] = '0;
+      arb_payload[i].stream_idx = arb_stream_idx[i];
 
       // address and length
 % if bit_width == '32':
-      arb_dma_req[i]${sep}length   = dma_reg2hw[i].length[0].length.value;
-      arb_dma_req[i]${sep}src_addr = dma_reg2hw[i].src_addr[0].src_addr.value;
-      arb_dma_req[i]${sep}dst_addr = dma_reg2hw[i].dst_addr[0].dst_addr.value;
+      arb_payload[i].req${sep}length   = dma_reg2hw[i].length[0].length.value;
+      arb_payload[i].req${sep}src_addr = dma_reg2hw[i].src_addr[0].src_addr.value;
+      arb_payload[i].req${sep}dst_addr = dma_reg2hw[i].dst_addr[0].dst_addr.value;
 % else:
-      arb_dma_req[i]${sep}length   = {dma_reg2hw[i].length[1].length.value,     dma_reg2hw[i].length[0].length.value};
-      arb_dma_req[i]${sep}src_addr = {dma_reg2hw[i].src_addr[1].src_addr.value, dma_reg2hw[i].src_addr[0].src_addr.value};
-      arb_dma_req[i]${sep}dst_addr = {dma_reg2hw[i].dst_addr[1].dst_addr.value, dma_reg2hw[i].dst_addr[0].dst_addr.value};
+      arb_payload[i].req${sep}length   = {dma_reg2hw[i].length[1].length.value,     dma_reg2hw[i].length[0].length.value};
+      arb_payload[i].req${sep}src_addr = {dma_reg2hw[i].src_addr[1].src_addr.value, dma_reg2hw[i].src_addr[0].src_addr.value};
+      arb_payload[i].req${sep}dst_addr = {dma_reg2hw[i].dst_addr[1].dst_addr.value, dma_reg2hw[i].dst_addr[0].dst_addr.value};
 % endif
 
       // Protocols
-      arb_dma_req[i]${sep}opt.src_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.src_protocol.value);
-      arb_dma_req[i]${sep}opt.dst_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.dst_protocol.value);
+      arb_payload[i].req${sep}opt.src_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.src_protocol.value);
+      arb_payload[i].req${sep}opt.dst_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.dst_protocol.value);
 
       // Current backend only supports incremental burst
-      arb_dma_req[i]${sep}opt.src.burst = axi_pkg::BURST_INCR;
-      arb_dma_req[i]${sep}opt.dst.burst = axi_pkg::BURST_INCR;
+      arb_payload[i].req${sep}opt.src.burst = axi_pkg::BURST_INCR;
+      arb_payload[i].req${sep}opt.dst.burst = axi_pkg::BURST_INCR;
         // this frontend currently does not support cache variations
-      arb_dma_req[i]${sep}opt.src.cache = axi_pkg::CACHE_MODIFIABLE;
-      arb_dma_req[i]${sep}opt.dst.cache = axi_pkg::CACHE_MODIFIABLE;
+      arb_payload[i].req${sep}opt.src.cache = axi_pkg::CACHE_MODIFIABLE;
+      arb_payload[i].req${sep}opt.dst.cache = axi_pkg::CACHE_MODIFIABLE;
 
       // Backend options
-      arb_dma_req[i]${sep}opt.beo.decouple_aw    = dma_reg2hw[i].conf.decouple_aw.value;
-      arb_dma_req[i]${sep}opt.beo.decouple_rw    = dma_reg2hw[i].conf.decouple_rw.value;
-      arb_dma_req[i]${sep}opt.beo.src_max_llen   = dma_reg2hw[i].conf.src_max_llen.value;
-      arb_dma_req[i]${sep}opt.beo.dst_max_llen   = dma_reg2hw[i].conf.dst_max_llen.value;
-      arb_dma_req[i]${sep}opt.beo.src_reduce_len = dma_reg2hw[i].conf.src_reduce_len.value;
-      arb_dma_req[i]${sep}opt.beo.dst_reduce_len = dma_reg2hw[i].conf.dst_reduce_len.value;
+      arb_payload[i].req${sep}opt.beo.decouple_aw    = dma_reg2hw[i].conf.decouple_aw.value;
+      arb_payload[i].req${sep}opt.beo.decouple_rw    = dma_reg2hw[i].conf.decouple_rw.value;
+      arb_payload[i].req${sep}opt.beo.src_max_llen   = dma_reg2hw[i].conf.src_max_llen.value;
+      arb_payload[i].req${sep}opt.beo.dst_max_llen   = dma_reg2hw[i].conf.dst_max_llen.value;
+      arb_payload[i].req${sep}opt.beo.src_reduce_len = dma_reg2hw[i].conf.src_reduce_len.value;
+      arb_payload[i].req${sep}opt.beo.dst_reduce_len = dma_reg2hw[i].conf.dst_reduce_len.value;
 
 % if num_dim != 1:
       // ND connections
 % for nd in range(0, num_dim-1):
 % if bit_width == '32':
-      arb_dma_req[i].d_req[${nd}].reps = dma_reg2hw[i].dim[${nd}].reps[0].reps.value;
-      arb_dma_req[i].d_req[${nd}].src_strides = dma_reg2hw[i].dim[${nd}].src_stride[0].src_stride.value;
-      arb_dma_req[i].d_req[${nd}].dst_strides = dma_reg2hw[i].dim[${nd}].dst_stride[0].dst_stride.value;
+      arb_payload[i].req.d_req[${nd}].reps = dma_reg2hw[i].dim[${nd}].reps[0].reps.value;
+      arb_payload[i].req.d_req[${nd}].src_strides = dma_reg2hw[i].dim[${nd}].src_stride[0].src_stride.value;
+      arb_payload[i].req.d_req[${nd}].dst_strides = dma_reg2hw[i].dim[${nd}].dst_stride[0].dst_stride.value;
 % else:
-      arb_dma_req[i].d_req[${nd}].reps = {dma_reg2hw[i].dim[${nd}].reps[1].reps.value,
+      arb_payload[i].req.d_req[${nd}].reps = {dma_reg2hw[i].dim[${nd}].reps[1].reps.value,
                                       dma_reg2hw[i].dim[${nd}].reps[0].reps.value };
-      arb_dma_req[i].d_req[${nd}].src_strides = {dma_reg2hw[i].dim[${nd}].src_stride[1].src_stride.value,
+      arb_payload[i].req.d_req[${nd}].src_strides = {dma_reg2hw[i].dim[${nd}].src_stride[1].src_stride.value,
                                              dma_reg2hw[i].dim[${nd}].src_stride[0].src_stride.value};
-      arb_dma_req[i].d_req[${nd}].dst_strides = {dma_reg2hw[i].dim[${nd}].dst_stride[1].dst_stride.value,
+      arb_payload[i].req.d_req[${nd}].dst_strides = {dma_reg2hw[i].dim[${nd}].dst_stride[1].dst_stride.value,
                                              dma_reg2hw[i].dim[${nd}].dst_stride[0].dst_stride.value};
 % endif
 % endfor
@@ -189,13 +246,13 @@ module idma_${identifier} #(
       // Disable higher dimensions
       if ( dma_reg2hw[i].conf.enable_nd.value == 0) begin
 % for nd in range(0, num_dim-1):
-        arb_dma_req[i].d_req[${nd}].reps = ${"'0" if nd != num_dim-2 else "'d1"};
+        arb_payload[i].req.d_req[${nd}].reps = ${"'0" if nd != num_dim-2 else "'d1"};
 % endfor
       end
 % for nd in range(1, num_dim-1):
       else if ( dma_reg2hw[i].conf.enable_nd.value == ${nd}) begin
 % for snd in range(nd, num_dim-1):
-        arb_dma_req[i].d_req[${snd}].reps = 'd1;
+        arb_payload[i].req.d_req[${snd}].reps = 'd1;
 % endfor
       end
 % endfor
@@ -231,7 +288,7 @@ module idma_${identifier} #(
   // arbitration
   rr_arb_tree #(
     .NumIn     ( NumRegs   ),
-    .DataType  ( dma_req_t ),
+    .DataType  ( arb_payload_t ),
     .ExtPrio   ( 0         ),
     .AxiVldRdy ( 1         ),
     .LockIn    ( 1         )
@@ -242,10 +299,10 @@ module idma_${identifier} #(
     .rr_i    ( '0          ),
     .req_i   ( arb_valid   ),
     .gnt_o   ( arb_ready   ),
-    .data_i  ( arb_dma_req ),
+    .data_i  ( arb_payload ),
     .gnt_i   ( req_ready_i ),
     .req_o   ( req_valid_o ),
-    .data_o  ( dma_req_o   ),
+    .data_o  ( arb_payload_out ),
     .idx_o   ( /* NC */    )
   );
 

@@ -74,6 +74,7 @@ module idma_inst64_top #(
     localparam int unsigned NumDim       = ComputeEnable.transpose ? 32'd4 : 32'd2;
     localparam int unsigned BufferDepth  = 32'd3;
     localparam int unsigned NumRules     = 32'd5;
+    localparam int unsigned AwInFlightCntWidth = (NumAxInFlight < 2) ? 32'd1 : $clog2(NumAxInFlight + 1);
 
     // derived constants and types
     localparam int unsigned StrbWidth    = AxiDataWidth / 32'd8;
@@ -329,14 +330,26 @@ module idma_inst64_top #(
         );
 
         always_comb begin : gen_obi_response
-            if (obi_we_q[c]) begin
-                obi_write_rsp[c].r = obi_res_i[c].r;
-            end else begin
-                obi_read_rsp[c].r = obi_res_i[c].r;
+            assign obi_write_rsp[c].r = obi_res_i[c].r;
+            assign obi_read_rsp[c].r = obi_res_i[c].r;
+        end
+
+        logic [AwInFlightCntWidth-1:0] aw_inflight_q; // outstanding write counter
+        logic                          aw_hs, b_hs; // handshake signals
+        assign aw_hs = axi_req_o[c].aw_valid & axi_res_i[c].aw_ready;
+        assign b_hs  = axi_res_i[c].b_valid  & axi_req_o[c].b_ready;
+        always_ff @(posedge clk_i or negedge rst_ni) begin : proc_aw_inflight
+            if (!rst_ni) begin
+                aw_inflight_q <= '0;
+            end else if (aw_hs & ~b_hs) begin
+                aw_inflight_q <= aw_inflight_q + 1'b1;
+            end else if (b_hs & ~aw_hs) begin
+                aw_inflight_q <= aw_inflight_q - 1'b1;
             end
         end
 
-        assign busy_o[c] = (|idma_busy[c]) | idma_nd_busy[c];
+        // Keep the channel busy until the iDMA backend or midend are busy, or until there's at least one AXI B response to be received.
+        assign busy_o[c] = (|idma_busy[c]) | idma_nd_busy[c] | (aw_inflight_q != '0);
     end
 
 
@@ -444,12 +457,16 @@ module idma_inst64_top #(
             .DataWidth    ( AxiDataWidth ),
             .axi_req_t    ( axi_req_t    ),
             .axi_res_t    ( axi_res_t    ),
+            .obi_req_t    ( obi_req_t    ),
+            .obi_res_t    ( obi_res_t    ),
             .dma_events_t ( dma_events_t )
         ) i_idma_inst64_events (
             .clk_i,
             .rst_ni,
             .axi_req_i      ( axi_req_o [c] ),
             .axi_rsp_i      ( axi_res_i [c] ),
+            .obi_req_i      ( obi_req_o [c] ),
+            .obi_res_i      ( obi_res_i [c] ),
             .busy_i         ( busy_o    [c] ),
             .events_o       ( events_o  [c] )
         );
