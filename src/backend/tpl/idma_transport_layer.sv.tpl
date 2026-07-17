@@ -264,7 +264,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     logic ${mh_format['aw'][protocol]}${protocol}_w_beat_done;
 
     %endfor
-    logic w_dp_req_valid, w_dp_req_ready;
+    logic w_dp_req_valid;
     logic w_dp_rsp_mux_valid, w_dp_rsp_mux_ready;
     logic w_dp_rsp_valid, w_dp_rsp_ready;
     w_dp_rsp_t w_dp_rsp_mux;
@@ -276,6 +276,11 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     idma_pkg::multihead_t w_resp_fifo_out_head;
 % endif
     logic w_resp_fifo_out_valid, w_resp_fifo_out_ready;
+% endif
+    logic w_dp_req_ready;
+% if one_write_port:
+    // Single write port; forward w_dp_req_ready to output port
+    assign w_dp_ready_o = w_dp_req_ready;
 % endif
 
     //--------------------------------------
@@ -417,7 +422,8 @@ ${rendered_read_ports[read_port]}
             .data_o      ( cmp_data_o          ),
             .strb_o      ( cmp_strb_o          ),
             .valid_o     ( cmp_out_valid       ),
-            .ready_i     ( w_beat_done         )
+            // Datapath will pulse `req_ready` on the last write beat being accepted, which is when the compute engine's output has been consumed.
+            .ready_i     ( w_dp_req_ready      )
         );
 
         // Whole-beat valid; edge masking is carried on wr_strb.

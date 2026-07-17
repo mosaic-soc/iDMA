@@ -189,7 +189,7 @@ def render_write_mgr_inst(prot_id: str, prot_ids: dict, db: dict) -> dict:
 
             if swp:
                 write_dp_valid_in = 'w_dp_valid_i'
-                write_dp_ready_out = 'w_dp_ready_o'
+                write_dp_ready_out = 'w_dp_req_ready'
                 write_dp_response = 'w_dp_rsp_o'
                 write_dp_valid_out = 'w_dp_valid_o'
                 write_dp_ready_in = 'w_dp_ready_i'
