@@ -87,6 +87,18 @@ module idma_legalizer_${name_uniqueifier} #(
     endfunction
 
 % endif
+    /// Return whether the selected protocol supports fixed-address bursts.
+    function automatic logic protocol_supports_fixed_burst(
+        input idma_pkg::protocol_e protocol
+    );
+        case (protocol)
+% for protocol in fixed_burst_prots:
+            idma_pkg::${database[protocol]['protocol_enum']}: return 1'b1;
+% endfor
+            default: return 1'b0;
+        endcase
+    endfunction
+
     /// Stobe width
     localparam int unsigned StrbWidth     = DataWidth / 8;
     /// Offset width
@@ -161,6 +173,14 @@ ${database[p]['max_beats_per_burst']} * StrbWidth > ${database[p]['page_size']}\
     logic r_tf_ena;
     logic w_tf_ena;
 
+    // A fixed encoding only has fixed-address semantics for protocols that support it.
+    logic r_fixed_burst;
+    logic w_fixed_burst;
+    assign r_fixed_burst = protocol_supports_fixed_burst(opt_tf_q.src_protocol) &&
+                           opt_tf_q.src_axi_opt.burst == axi_pkg::BURST_FIXED;
+    assign w_fixed_burst = protocol_supports_fixed_burst(opt_w_q.dst_protocol) &&
+                           opt_w_q.dst_axi_opt.burst == axi_pkg::BURST_FIXED;
+
     // page boundaries
 % if no_read_bursting or has_page_read_bursting:
     page_len_t r_page_num_bytes_to_pb;
@@ -168,6 +188,9 @@ ${database[p]['max_beats_per_burst']} * StrbWidth > ${database[p]['page_size']}\
 % for read_protocol in used_read_protocols:
     % if database[read_protocol]['bursts'] == 'only_pow2':
     page_len_t r_${database[read_protocol]['prefix']}_num_bytes_to_pb;
+    % endif
+    % if database[read_protocol].get('supports_fixed_bursts', 'false') == 'true':
+    page_len_t r_${database[read_protocol]['prefix']}_fixed_max_bytes;
     % endif
 % endfor
     page_len_t r_num_bytes_to_pb;
@@ -177,6 +200,9 @@ ${database[p]['max_beats_per_burst']} * StrbWidth > ${database[p]['page_size']}\
 % for write_protocol in used_write_protocols:
     % if database[write_protocol]['bursts'] == 'only_pow2':
     page_len_t w_${database[write_protocol]['prefix']}_num_bytes_to_pb;
+    % endif
+    % if database[write_protocol].get('supports_fixed_bursts', 'false') == 'true':
+    page_len_t w_${database[write_protocol]['prefix']}_fixed_max_bytes;
     % endif
 % endfor
     page_len_t w_num_bytes_to_pb;
@@ -312,9 +338,26 @@ r_tf_q.length[PageAddrWidth:0] ),
     );
 
     % endif
+    % if database[read_protocol].get('supports_fixed_bursts', 'false') == 'true':
+    /// Protocol '${read_protocol}' caps a FIXED burst at ${database[read_protocol]['max_beats_per_fixed_burst']} beats.
+    localparam int unsigned R${read_protocol.capitalize()}FixedBurstAddrWidth = $clog2(32'd${database[read_protocol]['max_beats_per_fixed_burst']});
+
+    assign r_${database[read_protocol]['prefix']}_fixed_max_bytes = page_len_t'(1 << (OffsetWidth +
+        ((opt_tf_q.src_reduce_len && (opt_tf_q.src_max_llen < 3'(R${read_protocol.capitalize()}FixedBurstAddrWidth)))
+            ? opt_tf_q.src_max_llen : R${read_protocol.capitalize()}FixedBurstAddrWidth)));
+
+    % endif
 % endfor
 % if one_read_port:
-    % if has_pow2_read_bursting:
+    % if used_read_protocols[0] in fixed_burst_prots:
+    assign r_num_bytes_to_pb = (opt_tf_q.src_axi_opt.burst == axi_pkg::BURST_FIXED) ?
+                               r_${database[used_read_protocols[0]]['prefix']}_fixed_max_bytes : \
+        % if has_pow2_read_bursting:
+r_${database[used_read_protocols[0]]['prefix']}_num_bytes_to_pb;
+        % else:
+r_page_num_bytes_to_pb;
+        % endif
+    % elif has_pow2_read_bursting:
     assign r_num_bytes_to_pb = r_${database[used_read_protocols[0]]['prefix']}_num_bytes_to_pb;
     % else:
     assign r_num_bytes_to_pb = r_page_num_bytes_to_pb;
@@ -324,7 +367,15 @@ r_tf_q.length[PageAddrWidth:0] ),
         case (opt_tf_q.src_protocol)
     % for read_protocol in used_read_protocols:
         idma_pkg::${database[read_protocol]['protocol_enum']}: \
-        % if database[read_protocol]['bursts'] == 'only_pow2':
+        % if read_protocol in fixed_burst_prots:
+r_num_bytes_to_pb = (opt_tf_q.src_axi_opt.burst == axi_pkg::BURST_FIXED) ?
+                    r_${database[read_protocol]['prefix']}_fixed_max_bytes : \
+            % if database[read_protocol]['bursts'] == 'only_pow2':
+r_${database[read_protocol]['prefix']}_num_bytes_to_pb;
+            % else:
+r_page_num_bytes_to_pb;
+            % endif
+        % elif database[read_protocol]['bursts'] == 'only_pow2':
 r_num_bytes_to_pb = r_${database[read_protocol]['prefix']}_num_bytes_to_pb;
         % else:
 r_num_bytes_to_pb = r_page_num_bytes_to_pb;
@@ -396,9 +447,26 @@ w_tf_q.length[PageAddrWidth:0] ),
     );
 
     % endif
+    % if database[write_protocol].get('supports_fixed_bursts', 'false') == 'true':
+    /// Protocol '${write_protocol}' caps a FIXED burst at ${database[write_protocol]['max_beats_per_fixed_burst']} beats.
+    localparam int unsigned W${write_protocol.capitalize()}FixedBurstAddrWidth = $clog2(32'd${database[write_protocol]['max_beats_per_fixed_burst']});
+
+    assign w_${database[write_protocol]['prefix']}_fixed_max_bytes = page_len_t'(1 << (OffsetWidth +
+        ((opt_w_q.dst_reduce_len && (opt_w_q.dst_max_llen < 3'(W${write_protocol.capitalize()}FixedBurstAddrWidth)))
+            ? opt_w_q.dst_max_llen : W${write_protocol.capitalize()}FixedBurstAddrWidth)));
+
+    % endif
 % endfor
 % if one_write_port:
-    % if has_pow2_write_bursting:
+    % if used_write_protocols[0] in fixed_burst_prots:
+    assign w_num_bytes_to_pb = (opt_w_q.dst_axi_opt.burst == axi_pkg::BURST_FIXED) ?
+                               w_${database[used_write_protocols[0]]['prefix']}_fixed_max_bytes : \
+        % if has_pow2_write_bursting:
+w_${database[used_write_protocols[0]]['prefix']}_num_bytes_to_pb;
+        % else:
+w_page_num_bytes_to_pb;
+        % endif
+    % elif has_pow2_write_bursting:
     assign w_num_bytes_to_pb = w_${database[used_write_protocols[0]]['prefix']}_num_bytes_to_pb;
     % else:
     assign w_num_bytes_to_pb = w_page_num_bytes_to_pb;
@@ -408,7 +476,15 @@ w_tf_q.length[PageAddrWidth:0] ),
         case (opt_w_q.dst_protocol)
     % for write_protocol in used_write_protocols:
         idma_pkg::${database[write_protocol]['protocol_enum']}: \
-        % if database[write_protocol]['bursts'] == 'only_pow2':
+        % if write_protocol in fixed_burst_prots:
+w_num_bytes_to_pb = (opt_w_q.dst_axi_opt.burst == axi_pkg::BURST_FIXED) ?
+                    w_${database[write_protocol]['prefix']}_fixed_max_bytes : \
+            % if database[write_protocol]['bursts'] == 'only_pow2':
+w_${database[write_protocol]['prefix']}_num_bytes_to_pb;
+            % else:
+w_page_num_bytes_to_pb;
+            % endif
+        % elif database[write_protocol]['bursts'] == 'only_pow2':
 w_num_bytes_to_pb = w_${database[write_protocol]['prefix']}_num_bytes_to_pb;
         % else:
 w_num_bytes_to_pb = w_page_num_bytes_to_pb;
@@ -591,7 +667,7 @@ w_num_bytes_to_pb = w_page_num_bytes_to_pb;
             // calculate remainder
             r_tf_d.length = r_tf_q.length - r_num_bytes_possible;
             // next address
-            r_tf_d.addr = r_tf_q.addr + r_num_bytes;
+            r_tf_d.addr = r_fixed_burst ? r_tf_q.addr : r_tf_q.addr + r_num_bytes;
 
         // remaining bytes fit in one burst
         end else begin
@@ -610,7 +686,7 @@ w_num_bytes_to_pb = w_page_num_bytes_to_pb;
             // calculate remainder
             w_tf_d.length = w_tf_q.length - w_num_bytes_possible;
             // next address
-            w_tf_d.addr = w_tf_q.addr + w_num_bytes;
+            w_tf_d.addr = w_fixed_burst ? w_tf_q.addr : w_tf_q.addr + w_num_bytes;
 
         // remaining bytes fit in one burst
         end else begin
@@ -918,11 +994,17 @@ ${database[protocol]['legalizer_write_data_path']}
         tp_tile_bytes = tp_num_elem << OffsetWidth;
     end
 
-    // only support the decomposition of incremental bursts
-    `ASSERT_NEVER(OnlyIncrementalBurstsSRC, (ready_o & valid_i &
-                  req_i.opt.src.burst != axi_pkg::BURST_INCR), clk_i, !rst_ni)
-    `ASSERT_NEVER(OnlyIncrementalBurstsDST, (ready_o & valid_i &
-                  req_i.opt.dst.burst != axi_pkg::BURST_INCR), clk_i, !rst_ni)
+    // Only decompose incrementing bursts, or fixed bursts supported by the selected protocol.
+    `ASSERT_NEVER(OnlySupportedBurstsSRC, (ready_o & valid_i &
+                  (req_i.opt.src.burst != axi_pkg::BURST_INCR) &
+                  !((req_i.opt.src.burst == axi_pkg::BURST_FIXED) &&
+                    protocol_supports_fixed_burst(req_i.opt.src_protocol))),
+                  clk_i, !rst_ni)
+    `ASSERT_NEVER(OnlySupportedBurstsDST, (ready_o & valid_i &
+                  (req_i.opt.dst.burst != axi_pkg::BURST_INCR) &
+                  !((req_i.opt.dst.burst == axi_pkg::BURST_FIXED) &&
+                    protocol_supports_fixed_burst(req_i.opt.dst_protocol))),
+                  clk_i, !rst_ni)
 
     // size-changing compute: length must be a whole multiple of the op's input granule
     `ASSERT_NEVER(ComputeSizeAligned, (ready_o & valid_i & req_i.opt.compute.enable &
