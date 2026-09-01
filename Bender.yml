@@ -145,3 +145,8 @@ sources:
     files:
       - test/tb_idma_backend_multihead.sv
       - test/tb_idma_backend_multihead_rw.sv
+
+  # FIXED-burst directed backend testbench
+  - target: fixed_burst
+    files:
+      - test/tb_idma_backend_fixed_burst.sv
