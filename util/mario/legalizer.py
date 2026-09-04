@@ -76,14 +76,14 @@ def render_legalizer(prot_ids: dict, db: dict, tpl_file: str) -> str:
             'used_protocols': prot_ids[prot_id]['used'],
             'one_read_port': srp,
             'one_write_port': swp,
-            'no_read_bursting':
-                not has_read_bursting,
+            'has_read_bursting':
+                has_read_bursting,
             'has_page_read_bursting':
                 has_page_read_bursting,
             'has_pow2_read_bursting':
                 has_pow2_read_bursting,
-            'no_write_bursting':
-                not has_write_bursting,
+            'has_write_bursting':
+                has_write_bursting,
             'has_page_write_bursting':
                 has_page_write_bursting,
             'has_pow2_write_bursting':
