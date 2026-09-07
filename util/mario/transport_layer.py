@@ -197,6 +197,7 @@ def render_write_mgr_inst(prot_id: str, prot_ids: dict, db: dict) -> dict:
                 write_meta_valid = 'aw_valid_i'
                 write_meta_ready = 'aw_ready_o'
                 buffer_out_ready = 'buffer_out_ready'
+                buffer_out_consumed = 'buffer_out_consumed'
             else:
                 if num_heads == 1:
                     write_dp_valid_in = f'''\
@@ -227,6 +228,7 @@ aw_valid_i\
 '''
                 write_meta_ready = f'{wp}_aw_ready{mh_bus}'
                 buffer_out_ready = f'{wp}_buffer_out_ready{mh_bus}'
+                buffer_out_consumed = f'{wp}_buffer_out_consumed{mh_bus}'
 
             write_port_context = {
                 'database': db,
@@ -243,6 +245,7 @@ aw_valid_i\
                 'write_request': f'{wp}_write_req_o{mh_bus}',
                 'write_response': f'{wp}_write_rsp_i{mh_bus}',
                 'buffer_out_ready': buffer_out_ready,
+                'buffer_out_consumed': buffer_out_consumed,
                 'mh': mh
             }
 

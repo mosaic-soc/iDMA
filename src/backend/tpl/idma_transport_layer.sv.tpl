@@ -217,10 +217,13 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
 % if not one_write_port:
     % for p in used_write_protocols:
     strb_t ${mh_format['aw'][p]}${p}_buffer_out_ready;
+    strb_t ${mh_format['aw'][p]}${p}_buffer_out_consumed;
     % endfor
 % endif
     strb_t buffer_out_ready;
     strb_t buffer_out_ready_shifted;
+    strb_t buffer_out_consumed;
+    strb_t buffer_out_consumed_shifted;
 
     // shifted data flowing into the buffer
 % if not one_read_port:
@@ -260,7 +263,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     logic ${mh_format['aw'][protocol]}${protocol}_w_dp_ready;
     w_dp_rsp_t ${mh_format['aw'][protocol]}${protocol}_w_dp_rsp;
     logic ${mh_format['aw'][protocol]}${protocol}_aw_ready;
-
     %endfor
     logic w_dp_req_valid;
     logic w_dp_rsp_mux_valid, w_dp_rsp_mux_ready;
@@ -398,9 +400,11 @@ ${rendered_read_ports[read_port]}
 % if compute_eligible:
     if (EnableCompute) begin : gen_compute
         logic                  cmp_active;
-        logic                  cmp_in_ready, cmp_out_valid;
+        logic                  cmp_in_ready, cmp_out_valid, cmp_out_ready;
         byte_t [StrbWidth-1:0] cmp_data_o;
         strb_t                 cmp_strb_o;
+        strb_t                 cmp_consumed_d, cmp_consumed_q;
+        strb_t                 cmp_consumed_this_cycle;
 
         idma_otf_compute #(
             .StrbWidth           ( StrbWidth          ),
@@ -418,14 +422,32 @@ ${rendered_read_ports[read_port]}
             .data_o      ( cmp_data_o          ),
             .strb_o      ( cmp_strb_o          ),
             .valid_o     ( cmp_out_valid       ),
-            .ready_i     ( w_dp_req_ready      )
+            .ready_i     ( cmp_out_ready       )
         );
+
+        // The compute engine holds its output stable until ready.  Track only which logical byte
+        // positions have been consumed by legalized write fragments and release the result when
+        // the final positions are consumed; no data buffering or extra cycle is needed.
+        assign cmp_consumed_this_cycle = cmp_active ? buffer_out_consumed_shifted : '0;
+        assign cmp_out_ready = &(cmp_consumed_q | cmp_consumed_this_cycle);
+
+        always_comb begin : proc_compute_consumed
+            cmp_consumed_d = cmp_consumed_q | cmp_consumed_this_cycle;
+            if (cmp_out_valid && cmp_out_ready) begin
+                cmp_consumed_d = '0;
+            end
+        end
+
+        `FF(cmp_consumed_q, cmp_consumed_d, '0, clk_i, rst_ni)
 
         assign wr_data           = cmp_active ? cmp_data_o : buffer_out;
         assign wr_valid          = cmp_active ? {StrbWidth{cmp_out_valid}} : buffer_out_valid;
         assign wr_strb           = cmp_active ? cmp_strb_o : '1;
         assign dataflow_ready_in = cmp_active ? {StrbWidth{(&buffer_out_valid) & cmp_in_ready}}
                                               : buffer_out_ready_shifted;
+
+        `ASSERT(ComputeConsumeValid, cmp_consumed_this_cycle != '0 |-> cmp_out_valid,
+            clk_i, !rst_ni, "Write datapath consumed bytes without a valid compute result")
     end else begin : gen_no_compute
         assign wr_data           = buffer_out;
         assign wr_valid          = buffer_out_valid;
@@ -448,6 +470,8 @@ ${rendered_read_ports[read_port]}
     assign buffer_out_valid_shifted = strb_t'({wr_valid, wr_valid} >>   w_dp_req_i.shift);
     assign mask_ext_shifted         = strb_t'({wr_strb, wr_strb} >>   w_dp_req_i.shift);
     assign buffer_out_ready_shifted = strb_t'({buffer_out_ready, buffer_out_ready} >> - w_dp_req_i.shift);
+    assign buffer_out_consumed_shifted =
+        strb_t'({buffer_out_consumed, buffer_out_consumed} >> -w_dp_req_i.shift);
 
 % if not one_write_port:
     //--------------------------------------
@@ -474,15 +498,18 @@ ${rendered_read_ports[read_port]}
     % if mh_format['aw'][wp] == '':
             w_dp_req_ready   = ${wp}_w_dp_ready;
             buffer_out_ready = ${wp}_buffer_out_ready;
+            buffer_out_consumed = ${wp}_buffer_out_consumed;
     % else:
             w_dp_req_ready   = ${wp}_w_dp_ready [w_dp_req_i.dst_head];
             buffer_out_ready = ${wp}_buffer_out_ready [w_dp_req_i.dst_head];
+            buffer_out_consumed = ${wp}_buffer_out_consumed [w_dp_req_i.dst_head];
     % endif
         end
 % endfor
         default: begin
             w_dp_req_ready   = 1'b0;
             buffer_out_ready = '0;
+            buffer_out_consumed = '0;
         end
         endcase
     end
