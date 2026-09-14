@@ -5,10 +5,9 @@
 // Authors:
 // - Daniel Keller <dankeller@iis.ee.ethz.ch>
 
-// End-to-end back-to-back transpose regression: per geometry, two transposes
-// with different layout modes and destination bases pass through the transpose
-// and ND midends, safe edge replay, rw_axi backend, and axi_sim_mem. This catches
-// stale base addresses as well as stale compact/padded configuration.
+// End-to-end back-to-back transpose regression. Sequential mixed-layout cases
+// catch stale addresses and layout state, while a queued pair reuses one compute
+// configuration to exercise overlap between consecutive transpose transfers.
 
 `include "axi/typedef.svh"
 `include "idma/typedef.svh"
@@ -71,6 +70,7 @@ module tb_idma_transpose_b2b
   axi_req_t axi_read_req, axi_write_req, axi_req, axi_req_mem;
   axi_rsp_t axi_read_rsp, axi_write_rsp, axi_rsp, axi_rsp_mem;
   idma_busy_t busy; logic nd_busy;
+  int unsigned nd_rsp_count_q;
 
   assign idma_eh_req = '0;
   assign eh_req_valid = 1'b0;
@@ -176,67 +176,172 @@ module tb_idma_transpose_b2b
     req_rsp_cb.transpose_req_valid <= 1'b0;
   endtask
 
-  task automatic wait_nd_rsp;
-    while (!(req_rsp_cb.nd_rsp_valid && req_rsp_cb.nd_rsp_ready)) @(req_rsp_cb);
+  // Keep valid asserted between descriptors so they handshake on consecutive cycles whenever the
+  // midend is ready. Backpressure may delay either handshake but never inserts a TB-generated gap.
+  task automatic send_back_to_back_transpose_reqs(
+      input idma_nd_req_t first_req,
+      input idma_nd_req_t second_req
+  );
+    @(req_rsp_cb);
+    req_rsp_cb.transpose_req <= first_req;
+    req_rsp_cb.transpose_req_valid <= 1'b1;
+    do @(req_rsp_cb); while (!req_rsp_cb.transpose_req_ready);
+    req_rsp_cb.transpose_req <= second_req;
+    do @(req_rsp_cb); while (!req_rsp_cb.transpose_req_ready);
+    req_rsp_cb.transpose_req <= '0;
+    req_rsp_cb.transpose_req_valid <= 1'b0;
   endtask
 
-  // One transpose to `db` in the selected layout; returns its error count.
-  task automatic do_transpose(input int unsigned m, input int unsigned n, input int unsigned eb,
-                              input bit compact, input addr_t db, output int unsigned errs);
+  task automatic wait_nd_rsp;
+    automatic int unsigned target_count = nd_rsp_count_q + 1;
+    while (nd_rsp_count_q < target_count) @(req_rsp_cb);
+  endtask
+
+  // Initialize one independent memory region and construct its transpose descriptor.
+  task automatic prepare_transpose(
+      input int unsigned m,
+      input int unsigned n,
+      input int unsigned eb,
+      input bit compact,
+      input addr_t src_base,
+      input addr_t dst_base,
+      input int unsigned pattern_seed,
+      output idma_nd_req_t req
+  );
     automatic int unsigned ne   = StrbWidth / eb;
     automatic int unsigned mode = (eb == 4) ? 2 : (eb == 2) ? 1 : 0;
     automatic int unsigned yt   = (m + ne - 1) / ne;
     automatic int unsigned nt   = (n + ne - 1) / ne;
     automatic int unsigned mp   = yt * ne;
-    automatic int unsigned dp   = compact ? m : mp;
-    errs = 0;
+
+    for (int unsigned i = 0; i < m*n*eb; i++)
+      wr_mem(src_base + i, 8'(((i + pattern_seed) * 7 + 3) & 8'hFF));
+
     // Back the padded envelope in both modes. Bytes beyond the compact matrix
     // become guards against stale strides or nonzero edge writes.
     for (int unsigned i = 0; i < nt*ne; i++)
       for (int unsigned j = 0; j < mp; j++)
         for (int unsigned b = 0; b < eb; b++)
-          wr_mem(db + (i*mp + j)*eb + b, 8'hCC);
-    transpose_req = '0;
-    transpose_req.burst_req.src_addr = sb;
-    transpose_req.burst_req.dst_addr = db;
-    transpose_req.burst_req.opt.src_protocol = idma_pkg::AXI;
-    transpose_req.burst_req.opt.dst_protocol = idma_pkg::AXI;
-    transpose_req.burst_req.opt.src.burst    = axi_pkg::BURST_INCR;
-    transpose_req.burst_req.opt.dst.burst    = axi_pkg::BURST_INCR;
-    transpose_req.burst_req.opt.beo.decouple_rw = 1'b1;
-    transpose_req.burst_req.opt.beo.decouple_aw = 1'b1;
-    transpose_req.burst_req.opt.compute.enable                    = 1'b1;
-    transpose_req.burst_req.opt.compute.op                        = idma_pkg::COMPUTE_TRANSPOSE;
-    transpose_req.burst_req.opt.compute.params.transpose.compact  = compact;
-    transpose_req.burst_req.opt.compute.params.transpose.mode     = 2'(mode);
-    transpose_req.burst_req.opt.compute.params.transpose.tensor_m = 12'(m);
-    transpose_req.burst_req.opt.compute.params.transpose.tensor_n = 12'(n);
-    transpose_req.burst_req.opt.last = 1'b1;
+          wr_mem(dst_base + (i*mp + j)*eb + b, 8'hCC);
 
-    send_transpose_req(transpose_req);
-    wait_nd_rsp();
-    repeat (20) @(posedge clk);
+    req = '0;
+    req.burst_req.src_addr = src_base;
+    req.burst_req.dst_addr = dst_base;
+    req.burst_req.opt.src_protocol = idma_pkg::AXI;
+    req.burst_req.opt.dst_protocol = idma_pkg::AXI;
+    req.burst_req.opt.src.burst    = axi_pkg::BURST_INCR;
+    req.burst_req.opt.dst.burst    = axi_pkg::BURST_INCR;
+    req.burst_req.opt.beo.decouple_rw = 1'b1;
+    req.burst_req.opt.beo.decouple_aw = 1'b1;
+    req.burst_req.opt.compute.enable                    = 1'b1;
+    req.burst_req.opt.compute.op                        = idma_pkg::COMPUTE_TRANSPOSE;
+    req.burst_req.opt.compute.params.transpose.compact  = compact;
+    req.burst_req.opt.compute.params.transpose.mode     = 2'(mode);
+    req.burst_req.opt.compute.params.transpose.tensor_m = 12'(m);
+    req.burst_req.opt.compute.params.transpose.tensor_n = 12'(n);
+    req.burst_req.opt.last = 1'b1;
+  endtask
+
+  // Check transposed data and verify that edge padding remains untouched.
+  task automatic check_transpose(
+      input int unsigned m,
+      input int unsigned n,
+      input int unsigned eb,
+      input bit compact,
+      input addr_t src_base,
+      input addr_t dst_base,
+      output int unsigned errs
+  );
+    automatic int unsigned ne = StrbWidth / eb;
+    automatic int unsigned yt = (m + ne - 1) / ne;
+    automatic int unsigned nt = (n + ne - 1) / ne;
+    automatic int unsigned mp = yt * ne;
+    automatic int unsigned dp = compact ? m : mp;
+    errs = 0;
+
     // Check data at either compact or padded destination row pitch.
     for (int unsigned c = 0; c < n; c++)
       for (int unsigned r = 0; r < m; r++)
         for (int unsigned b = 0; b < eb; b++)
-          if (rd_mem(db + (c*dp + r)*eb + b) !== rd_mem(sb + (r*n + c)*eb + b)) begin
-            errs++; if (errs <= 8) $display("[B2BT] @db=%0h MISMATCH out_T[%0d][%0d].b%0d", db, c, r, b);
+          if (rd_mem(dst_base + (c*dp + r)*eb + b) !==
+              rd_mem(src_base + (r*n + c)*eb + b)) begin
+            errs++;
+            if (errs <= 8)
+              $display("[B2BT] @db=%0h MISMATCH out_T[%0d][%0d].b%0d",
+                       dst_base, c, r, b);
           end
     // Padded holes or the tail after a compact matrix must remain untouched.
     for (int unsigned byte_idx = 0; byte_idx < nt*ne*mp*eb; byte_idx++)
       if (byte_idx >= n*dp*eb ||
           (!compact && ((byte_idx / eb) / mp >= n || (byte_idx / eb) % mp >= m)))
-        if (rd_mem(db + byte_idx) !== 8'hCC) begin
+        if (rd_mem(dst_base + byte_idx) !== 8'hCC) begin
           errs++;
           if (errs <= 8)
             $display("[B2BT] @db=%0h UNUSED DESTINATION BYTE CLOBBERED at +0x%0h",
-                     db, byte_idx);
+                     dst_base, byte_idx);
         end
   endtask
 
+  // One complete, sequential transpose used by the existing layout-transition cases.
+  task automatic do_transpose(input int unsigned m, input int unsigned n, input int unsigned eb,
+                              input bit compact, input addr_t src_base, input addr_t dst_base,
+                              ref int unsigned errs);
+    automatic idma_nd_req_t req;
+    prepare_transpose(m, n, eb, compact, src_base, dst_base, 0, req);
+    send_transpose_req(req);
+    wait_nd_rsp();
+    repeat (20) @(posedge clk);
+    check_transpose(m, n, eb, compact, src_base, dst_base, errs);
+  endtask
+
+  // Queue two descriptors with identical compute options before waiting for either completion.
+  // Different options are deliberately serialized by the backend configuration interlock; equal
+  // options are allowed to overlap and exercise the transpose engine's transfer boundary.
+  task automatic run_queued_transposes(ref int unsigned errs);
+    localparam int unsigned M0 = 37, N0 = 29, EB0 = 1;
+    localparam int unsigned M1 = M0, N1 = N0, EB1 = EB0;
+    localparam bit Compact0 = 1'b0, Compact1 = Compact0;
+    automatic addr_t src0 = 'h0001_0000;
+    automatic addr_t src1 = 'h0001_8000;
+    automatic addr_t dst0 = 'h0002_0000;
+    automatic addr_t dst1 = 'h0002_8000;
+    automatic idma_nd_req_t req0, req1;
+    automatic int unsigned rsp_count_before, err0, err1;
+
+    prepare_transpose(M0, N0, EB0, Compact0, src0, dst0, 11, req0);
+    prepare_transpose(M1, N1, EB1, Compact1, src1, dst1, 97, req1);
+
+    rsp_count_before = nd_rsp_count_q;
+    fork
+      send_back_to_back_transpose_reqs(req0, req1);
+      begin
+        // The ND input handshake retires only after its final generated burst. Instead, identify
+        // transfer 2 by its independent source base and observe its first backend request.
+        do @(posedge clk); while (!(req_valid && req_ready && idma_req.src_addr == src1));
+        assert (nd_rsp_count_q == rsp_count_before && !(nd_rsp_valid && nd_rsp_ready))
+        else $fatal(1, "[B2BT] first transpose completed before second reached the backend");
+      end
+    join
+
+    while (nd_rsp_count_q < rsp_count_before + 2) @(req_rsp_cb);
+    repeat (20) @(posedge clk);
+    check_transpose(M0, N0, EB0, Compact0, src0, dst0, err0);
+    check_transpose(M1, N1, EB1, Compact1, src1, dst1, err1);
+    errs = err0 + err1;
+  endtask
+
+  // Responses are always accepted, so retain their handshakes for tests that submit multiple
+  // descriptors before they begin waiting for completion.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      nd_rsp_count_q <= '0;
+    end else if (nd_rsp_valid && nd_rsp_ready) begin
+      nd_rsp_count_q <= nd_rsp_count_q + 1;
+    end
+  end
+
   initial begin
-    automatic int unsigned total = 0, e1, e2;
+    automatic int unsigned total = 0, e1, e2, queued_errors;
     automatic addr_t db1;
     automatic addr_t db2 = 'h0000_8000;   // DIFFERENT base — a stale-addr bug misplaces xfer 2
     automatic int unsigned m, n, eb;
@@ -248,12 +353,6 @@ module tb_idma_transpose_b2b
     for (int unsigned k = 0; k < NCases; k++) begin
       m = Cases[k][0]; n = Cases[k][1]; eb = Cases[k][2];
       if (eb > StrbWidth) continue;
-      // (re)init source for this geometry
-      for (int unsigned r = 0; r < m; r++)
-        for (int unsigned c = 0; c < n; c++)
-          for (int unsigned b = 0; b < eb; b++)
-            wr_mem(sb + (r*n + c)*eb + b, 8'((( (r*n+c)*eb + b )*7 + 3) & 8'hFF));
-
       // The final case starts two bytes below a 4 KiB boundary. Its first logical output beat
       // therefore crosses 0x5000 for every tested StrbWidth and must be split by the legalizer.
       db1 = (k == Cross4KCase) ? 'h0000_4ffe : 'h0000_4000;
@@ -263,13 +362,21 @@ module tb_idma_transpose_b2b
       first_compact = (k == Cross4KCase) ? 1'b1 : bit'(k & 1);
       $display("[B2BT] %0dx%0d EB=%0d: compact=%0d -> db=%0h, compact=%0d -> db=%0h",
                m, n, eb, first_compact, db1, !first_compact, db2);
-      do_transpose(m, n, eb, first_compact, db1, e1);
-      do_transpose(m, n, eb, !first_compact, db2, e2);
+      do_transpose(m, n, eb, first_compact, sb, db1, e1);
+      do_transpose(m, n, eb, !first_compact, sb, db2, e2);
       if (e1 == 0 && e2 == 0)
         $display("[B2BT] PASS: %0dx%0d EB=%0d both layouts correct back-to-back", m, n, eb);
       else                    $display("[B2BT] FAIL: %0dx%0d EB=%0d xfer1=%0d xfer2=%0d", m, n, eb, e1, e2);
       total += e1 + e2;
     end
+
+    $display("[B2BT] Launching true queued back-to-back transposes");
+    run_queued_transposes(queued_errors);
+    if (queued_errors == 0)
+      $display("[B2BT] PASS: overlapping transfers with shared geometry completed correctly");
+    else
+      $display("[B2BT] FAIL: queued transfers produced %0d mismatches", queued_errors);
+    total += queued_errors;
 
     if (total == 0) $display("[B2BT] ALL PASS (%0d mixed-layout cases, StrbWidth=%0d)",
                              NCases, StrbWidth);
