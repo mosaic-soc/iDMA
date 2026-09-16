@@ -22,18 +22,19 @@ A thin wrapper (`src/frontend/reg/tpl/idma_reg.sv.tpl`, rendered by MARIO for th
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `NumRegs` | 1 | Number of configuration register ports (parallel access points) |
-| `NumStreams` | 1 | Number of independent DMA streams (max 16). Each stream has its own transfer ID counter |
+| `NumStreams` | 1 | Number of independent DMA streams (max 16). IDs are allocated globally and retired per stream |
 | `IdCounterWidth` | 32 | Width of the transfer ID counter (max 32-bit) |
+| `LaunchFifoDepth` | `NumRegs` | Number of accepted launches buffered before the request output; zero bypasses the FIFO and accepts launches only when the downstream interface is ready |
 
 ## Programming Sequence
 
 1. **Write transfer parameters**: Set `src_addr`, `length`, `dst_addr`, and optionally `reps`/`src_stride`/`dst_stride` for 2D mode
 2. **Write configuration**: Set `conf` with the desired decouple flags, protocol selection, and ND mode enable. For an on-the-fly compute transfer also set `compute_cfg` (see below). Stream selection is implicit in which `next_id[stream]` register you read in the next step
-3. **Read `next_id[stream]`**: This read atomically launches the transfer on the selected stream and returns the assigned transfer ID (0 if the transfer was not set up correctly)
+3. **Read `next_id[stream]`**: This read attempts to atomically queue the transfer on the selected stream. A nonzero result is the assigned transfer ID. A zero result means no transfer was queued and the launch must be retried
 4. **Poll `done_id[stream]`**: Wait until `done_id >= next_id` to confirm completion
 
 :::caution[Side-effect read]
-Reading the `next_id` register has a side effect - it atomically samples the configured transfer parameters and launches the transfer. In the RDL this field is marked `rd_swacc`, so the read strobe latches the launch. This is non-standard register behavior; ensure your driver reads `next_id` exactly once per transfer.
+Reading the `next_id` register has a side effect: a successful read atomically samples the configured transfer parameters and queues the transfer. In the RDL this field is marked `rd_swacc`, so the read strobe performs the launch attempt. This is non-standard register behavior. Software must retain the configuration and retry the read if it returns ID zero.
 :::
 
 ## Register Map
@@ -63,7 +64,7 @@ Registers are 32 bits wide. 64-bit values (addresses, lengths, strides) occupy a
 | Register | Access | Description |
 |----------|--------|-------------|
 | `status` | RO | Per-stream busy flags |
-| `next_id` | RO | Per-stream next transfer ID. **Reading launches the transfer** |
+| `next_id` | RO | **Reading attempts to launch the transfer.** Returns its nonzero ID on success or zero if rejected |
 | `done_id` | RO | Per-stream last completed transfer ID |
 
 **ND Mode** - only used when `enable_nd` is set in `conf`:
@@ -103,7 +104,7 @@ Present when on-the-fly [compute](../compute/) is elaborated (`EnableCompute`). 
 
 ## Multi-Port Arbitration
 
-When `NumRegs > 1`, multiple register ports can submit transfers concurrently. An internal round-robin arbiter serializes requests to the single backend interface. Each port stalls independently on its `next_id` read until its request is accepted. This allows multiple cores to share a single DMA without software-level locking.
+When `NumRegs > 1`, multiple register ports can submit transfers. A round-robin allocator accepts at most one `next_id` read per cycle and places the descriptor, selected stream, and allocated ID into one ordered launch FIFO. Simultaneous losing reads and reads attempted while that FIFO is full return zero without consuming an ID. Software can retry them without reprogramming the descriptor. This keeps allocation and downstream issue order identical, so two ports cannot observe the same transfer ID.
 
 :::note[Figure placeholder]
 Diagram: register frontend sequence.
