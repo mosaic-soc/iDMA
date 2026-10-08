@@ -147,6 +147,9 @@ module idma_rt_midend #(
         assign idma_nd_req[c].burst_req.src_addr = src_addr_i [c];
         assign idma_nd_req[c].burst_req.dst_addr = dst_addr_i [c];
         assign idma_nd_req[c].burst_req.opt      = '0;
+        // The zero AXI burst encoding selects FIXED, whereas RT transfers advance addresses.
+        assign idma_nd_req[c].burst_req.opt.src.burst = axi_pkg::BURST_INCR;
+        assign idma_nd_req[c].burst_req.opt.dst.burst = axi_pkg::BURST_INCR;
         assign idma_nd_req[c].burst_req.scale_addr = '0;
 
     end
