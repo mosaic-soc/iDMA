@@ -5,6 +5,7 @@
 # Each testbench declares its configuration suffixes here. The generic
 # plumbing combines them into "<top>__<suffix>" build and run targets.
 IDMA_VLT_TESTBENCHES := \
+	tb_idma_backend_axi \
 	tb_idma_otf_transpose \
 	tb_idma_transpose_nd \
 	tb_idma_transpose_b2b \
@@ -15,6 +16,11 @@ IDMA_VLT_TESTBENCHES := \
 	tb_idma_rt_midend
 
 IDMA_VLT_SUFFIXES_tb_idma_otf_transpose := sw8_fd0 sw8_fd1 sw64_fd0 sw64_fd1
+IDMA_VLT_SUFFIXES_tb_idma_backend_axi := dw32 dw64 dw128_depth2 combined64
+IDMA_VLT_ELAB_ARGS_tb_idma_backend_axi__dw32 := -GDataWidth=32
+IDMA_VLT_ELAB_ARGS_tb_idma_backend_axi__dw64 := -GDataWidth=64
+IDMA_VLT_ELAB_ARGS_tb_idma_backend_axi__dw128_depth2 := -GDataWidth=128 -GBufferDepth=2
+IDMA_VLT_ELAB_ARGS_tb_idma_backend_axi__combined64 := -GDataWidth=64 -GCombinedShifter=1
 IDMA_VLT_SUFFIXES_tb_idma_transpose_nd := dw32 dw64
 IDMA_VLT_SUFFIXES_tb_idma_transpose_b2b := dw32 dw64
 IDMA_VLT_SUFFIXES_tb_idma_transpose_midend := dw64 dw512
