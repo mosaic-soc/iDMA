@@ -7,7 +7,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Verification Overview
 
-iDMA uses a SystemVerilog testbench driven by **job files** that describe transfer sequences. The testbench compares hardware behavior against a byte-accurate golden model. The full job-file testbenches run under Questa or VCS. Verilator provides both synthesis-top lint/elaboration and behavioral simulation of selected self-checking testbenches. Job files live in `jobs/backend_<variant>/`.
+iDMA uses a SystemVerilog testbench driven by **job files** that describe transfer sequences. The testbench compares hardware behavior against a byte-accurate golden model. The generated backend job-file testbenches run under Questa, VCS, or Verilator. Verilator also provides synthesis-top lint/elaboration and behavioral simulation of selected handwritten testbenches. Job files live in `jobs/backend_<variant>/`.
 
 For documentation quality checks, see [Docs Verification Plan](../docs-verification/).
 
@@ -180,7 +180,7 @@ make idma_sim_tb_idma_mxquant VSIM="questa-2023.4 vsim" \
   VLOG="questa-2023.4 vlog" VLIB="questa-2023.4 vlib"
 ```
 
-Selected self-checking testbenches also have behavioral Verilator targets. Use
+Generated backend and selected handwritten testbenches have behavioral Verilator targets. Use
 `idma_sim_vlt_<testbench>` to run every declared parameterization of one testbench,
 or `idma_sim_vlt_all` to run all of them. Their independent build directories live
 under `target/sim/vlt/`.
@@ -195,7 +195,7 @@ a short transfer length does not select a smaller AXI beat size.
 
 ## Running Simulations
 
-`idma.mk` wires three simulators. Questa and VCS run the full job-file testbenches. Verilator is used separately for lint/elaboration and for behavioral simulation of selected self-checking testbenches. Each flow takes its tool binaries as make variables, whose defaults are the bare `vsim` / `vcs` / `verilator` names; the Questa examples below use the `questa-2023.4` SEPP wrapper.
+`idma.mk` wires three simulators. Questa, VCS, and Verilator run generated backend job-file testbenches. Verilator has separate lint/elaboration and behavioral simulation flows. Each flow takes its tool binaries as make variables, whose defaults are the bare `vsim` / `vcs` / `verilator` names; the Questa examples below use the `questa-2023.4` SEPP wrapper.
 
 ### Prerequisites
 
@@ -256,8 +256,24 @@ make idma_sim_all   # Generate compile.tcl + start.tcl (Questa) and compile.sh (
 
   ```bash
   make idma_sim_vlt_tb_idma_transpose_nd VERILATOR=verilator
+  make idma_sim_vlt_tb_idma_backend_rw_axi
+  make idma_sim_vlt_backends
   make idma_sim_vlt_all VERILATOR=verilator
   ```
+
+  Generated backend targets follow `IDMA_BACKEND_IDS` and use each backend's
+  `jobs/backend_<variant>/simple.txt` by default. Select another matching job name
+  without rebuilding the executable:
+
+  ```bash
+  make idma_sim_vlt_tb_idma_backend_rw_axi IDMA_VLT_JOB=mixed
+  make idma_sim_vlt_tb_idma_backend_rw_axi IDMA_VLT_JOB_FILE=/path/to/jobs.txt
+  ```
+
+  `IDMA_VLT_JOB_FILE` overrides the named job file; use it with a compatible backend.
+  Job files are run dependencies, not build dependencies. The separate JSON DMA
+  tracer is disabled for these targets. Error-injection jobs require an elaboration
+  configuration with `ErrorHandling=1`; the default configuration leaves it disabled.
 
   A single parameterization can be selected with its generated run target, for
   example `idma_vlt_run_tb_idma_transpose_nd__dw64`. Set `TRACE=1` for FST tracing,
