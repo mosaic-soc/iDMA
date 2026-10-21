@@ -372,7 +372,7 @@ ${rendered_read_ports[read_port]}
     % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift;
     % else:
-                buffer_in_shift = r_dp_req_i.shift;
+                buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
     % endif
                 buffer_in_valid = ${rp}_buffer_in_valid;
                 buffer_in_beat  = ${rp}_buffer_in_beat;
@@ -387,7 +387,7 @@ ${rendered_read_ports[read_port]}
     % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift [r_dp_req_i.src_head];
     % else:
-                buffer_in_shift = r_dp_req_i.shift;
+                buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
     % endif
                 buffer_in_valid = ${rp}_buffer_in_valid [r_dp_req_i.src_head];
                 buffer_in_beat  = ${rp}_buffer_in_beat [r_dp_req_i.src_head];
@@ -419,7 +419,7 @@ ${rendered_read_ports[read_port]}
 
 % endif
 % if one_read_port and 'axi' not in used_read_protocols:
-    assign buffer_in_shift = r_dp_req_i.shift;
+    assign buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
 % endif
     //--------------------------------------
     // Read Barrel shifter
@@ -585,14 +585,16 @@ ${rendered_read_ports[read_port]}
         `ASSERT(ComputeBeatAllLanesValid, cmp_beat_valid |-> &cmp_lane_valid, clk_i, !rst_ni, "Scalar compute beat handshake requires all output lanes to be valid")
         `ASSERT(ComputeMxWholeBeat, r_dp_req_i.mx.mx & (|buffer_in_valid) |-> &buffer_in_valid,
                 clk_i, !rst_ni, "MX beats are read whole")
-        `ASSERT(ComputeMxNoShift, cmp_w_mx |-> w_dp_req_i.shift == '0, clk_i, !rst_ni,
+        `ASSERT(ComputeMxNoShift, cmp_w_mx |->
+                w_dp_req_i.fifo_start_lane == w_dp_req_i.offset, clk_i, !rst_ni,
                 "MX output bypasses the write shifter")
         `ASSERT(ComputeMxBeatPush, mx_push == (buffer_in_valid[0] & r_dp_req_i.mx.mx), clk_i,
                 !rst_ni, "MX push differs from the masked read beat")
         `ASSERT(ComputeMxPushBusy, mx_push |-> r_dp_busy_o, clk_i, !rst_ni,
                 "MX beat pushed while the read datapath is not busy")
         `ASSERT(ComputeMxNoReadShift, r_dp_req_i.mx.mx & (|buffer_in_valid) |->
-                r_dp_req_i.shift == '0, clk_i, !rst_ni, "MX input bypasses the read shifter")
+                r_dp_req_i.fifo_start_lane == r_dp_req_i.offset, clk_i, !rst_ni,
+                "MX input bypasses the read shifter")
         `ASSERT(ComputeMxWPop, cmp_w_mx & w_chan_valid_o & w_chan_ready_o |->
                 buffer_out_valid_shifted[0], clk_i, !rst_ni, "MX W beat without an engine beat")
     end else begin : gen_no_compute
@@ -624,7 +626,7 @@ ${rendered_read_ports[read_port]}
     //--------------------------------------
 
 % if one_write_port and used_write_protocols[0] != 'axi':
-    assign buffer_out_shift = w_dp_req_i.shift;
+    assign buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
 % endif
     assign buffer_out_tmp           = {wr_data, wr_data} >> (buffer_out_shift*8);
     assign wr_beat                  = buffer_out_tmp[$bits(wr_beat)/8-1:0];
@@ -664,7 +666,7 @@ ${rendered_read_ports[read_port]}
         % if wp == 'axi':
             buffer_out_shift = ${wp}_buffer_out_shift;
         % else:
-            buffer_out_shift = w_dp_req_i.shift;
+            buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
         % endif
             w_dp_req_ready   = ${wp}_w_dp_ready;
             buffer_out_ready = ${wp}_buffer_out_ready;
@@ -677,7 +679,7 @@ ${rendered_read_ports[read_port]}
         % if wp == 'axi':
             buffer_out_shift = ${wp}_buffer_out_shift[w_dp_req_i.dst_head];
         % else:
-            buffer_out_shift = w_dp_req_i.shift;
+            buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
         % endif
             w_dp_req_ready   = ${wp}_w_dp_ready [w_dp_req_i.dst_head];
             buffer_out_ready = ${wp}_buffer_out_ready [w_dp_req_i.dst_head];

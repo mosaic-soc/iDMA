@@ -217,7 +217,6 @@ ${database[p]['page_size']}\
     offset_t r_beat_mask, w_beat_mask;
     offset_t r_beat_offset, w_beat_offset;
     offset_t r_fifo_start_lane, w_fifo_start_lane;
-    offset_t r_shift, w_shift;
     offset_t r_tailer, w_tailer;
     addr_t r_axi_addr, w_axi_addr;
     axi_pkg::len_t r_num_beats, w_num_beats;
@@ -1044,8 +1043,6 @@ w_tf_q.length[PageAddrWidth:0] ),
         end
 % endif
     end
-    assign r_shift = r_addr_offset - r_fifo_start_lane;
-    assign w_shift = w_fifo_start_lane - w_addr_offset;
 
     // AxADDR retains the selected narrow lane instead of rounding down to a full bus word.
     // All divisions/modulo by the runtime power-of-two size use shifts and masks.
@@ -1100,7 +1097,6 @@ ${database[protocol]['legalizer_read_meta_channel']}
         fifo_start_lane:   r_req_o.fifo_start_lane,
         offset:       r_addr_offset,
         tailer:       r_tailer,
-        shift:        r_shift,
         decouple_aw:  opt_tf_q.decouple_aw,
 % if compute_eligible:
         is_single:    r_num_beats == '0,
@@ -1131,7 +1127,6 @@ ${database[used_write_protocols[0]]['legalizer_write_data_path']}
             fifo_start_lane:   w_fifo_start_lane,
             offset:       w_addr_offset,
             tailer:       w_tailer,
-            shift:        w_shift,
             num_beats:    'd0,
             is_single:    1'b1,
             compute:      opt_w_q.compute
@@ -1171,7 +1166,6 @@ ${database[protocol]['legalizer_write_data_path']}
                 fifo_start_lane:   w_fifo_start_lane,
                 offset:       w_addr_offset,
                 tailer:       w_tailer,
-                shift:        w_shift,
                 num_beats:    'd0,
                 is_single:    1'b1,
                 compute:      opt_w_q.compute

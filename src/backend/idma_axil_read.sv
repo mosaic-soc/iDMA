@@ -71,6 +71,9 @@ module idma_axil_read #(
     // that is shifted together with the data in the barrel shifter
     strb_t mask_in;
 
+    // Wrap the bus-to-FIFO rotation at the physical byte-lane width.
+    logic [$clog2(StrbWidth)-1:0] buffer_shift;
+
     // inbound control signals to the read buffer: controlled by the read process
     logic  in_valid;
     logic  in_ready;
@@ -106,7 +109,8 @@ module idma_axil_read #(
     // a barrel shifter is a concatenation of the same array with twice and a normal
     // shift. Optimized for Synopsys DesignWare.
     assign buffer_in_o = read_rsp_i.r.data;
-    assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> r_dp_req_i.shift;
+    assign buffer_shift = r_dp_req_i.offset - r_dp_req_i.fifo_start_lane;
+    assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift;
 
 
     //--------------------------------------

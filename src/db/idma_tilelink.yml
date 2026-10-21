@@ -87,7 +87,6 @@ legalizer_write_data_path: |
         fifo_start_lane: w_fifo_start_lane,
         offset: w_addr_offset,
         tailer: w_tailer,
-        shift: w_shift,
         num_beats: 'd0,
         is_single: w_num_bytes <= StrbWidth,
         compute: opt_w_q.compute
