@@ -84,7 +84,7 @@ legalizer_write_data_path: |
         num_bytes: w_num_bytes,
         size: opt_w_q.dst_size,
         burst: opt_w_q.dst_axi_opt.burst,
-        start_lane: w_start_lane,
+        fifo_start_lane: w_fifo_start_lane,
         offset: w_addr_offset,
         tailer: w_tailer,
         shift: w_shift,

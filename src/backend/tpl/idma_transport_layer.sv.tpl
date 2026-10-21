@@ -325,14 +325,14 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     ) i_idma_read_reservation_gate (
         .clk_i,
         .rst_ni,
-        .ar_valid_i      ( ar_valid_i                 ),
-        .ar_ready_o      ( ar_ready_o                 ),
-        .ar_valid_o      ( ar_gated_valid             ),
-        .ar_ready_i      ( ar_gated_ready             ),
-        .num_bytes_i     ( ar_req_i.num_bytes         ),
-        .start_lane_i    ( ar_req_i.start_lane        ),
-        .deadlock_free_i ( ar_req_i.deadlock_free     ),
-        .buffer_pop_i    ( buffer_out_handshake       )
+        .ar_valid_i        ( ar_valid_i               ),
+        .ar_ready_o        ( ar_ready_o               ),
+        .ar_valid_o        ( ar_gated_valid           ),
+        .ar_ready_i        ( ar_gated_ready           ),
+        .num_bytes_i       ( ar_req_i.num_bytes       ),
+        .fifo_start_lane_i ( ar_req_i.fifo_start_lane ),
+        .deadlock_free_i   ( ar_req_i.deadlock_free   ),
+        .buffer_pop_i      ( buffer_out_handshake     )
     );
 
 % for read_port in used_read_protocols:

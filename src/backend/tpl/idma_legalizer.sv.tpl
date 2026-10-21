@@ -216,7 +216,7 @@ ${database[p]['page_size']}\
     // A physical bus lane and an offset within the selected AXI beat differ for narrow accesses.
     offset_t r_beat_mask, w_beat_mask;
     offset_t r_beat_offset, w_beat_offset;
-    offset_t r_start_lane, w_start_lane;
+    offset_t r_fifo_start_lane, w_fifo_start_lane;
     offset_t r_shift, w_shift;
     offset_t r_tailer, w_tailer;
     addr_t r_axi_addr, w_axi_addr;
@@ -1029,23 +1029,23 @@ w_tf_q.length[PageAddrWidth:0] ),
     // Preserve the legacy compute/combined-shifter mapping. Plain copies use an address-
     // independent FIFO index, which also advances when FIXED bursts retain the same address.
     always_comb begin : gen_stream_mapping
-        r_start_lane = r_tf_q.stream_lane;
-        w_start_lane = w_tf_q.stream_lane;
+        r_fifo_start_lane = r_tf_q.stream_lane;
+        w_fifo_start_lane = w_tf_q.stream_lane;
         if (CombinedShifter) begin
-            r_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
-            w_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
+            r_fifo_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
+            w_fifo_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
         end
 % if compute_eligible:
         if (EnableCompute && opt_tf_q.compute.enable) begin
-            r_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
+            r_fifo_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
         end
         if (EnableCompute && opt_w_q.compute.enable) begin
-            w_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
+            w_fifo_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
         end
 % endif
     end
-    assign r_shift = r_addr_offset - r_start_lane;
-    assign w_shift = w_start_lane - w_addr_offset;
+    assign r_shift = r_addr_offset - r_fifo_start_lane;
+    assign w_shift = w_fifo_start_lane - w_addr_offset;
 
     // AxADDR retains the selected narrow lane instead of rounding down to a full bus word.
     // All divisions/modulo by the runtime power-of-two size use shifts and masks.
@@ -1097,7 +1097,7 @@ ${database[protocol]['legalizer_read_meta_channel']}
         num_bytes:    r_num_bytes,
         size:         opt_tf_q.src_size,
         burst:        opt_tf_q.src_axi_opt.burst,
-        start_lane:   r_req_o.start_lane,
+        fifo_start_lane:   r_req_o.fifo_start_lane,
         offset:       r_addr_offset,
         tailer:       r_tailer,
         shift:        r_shift,
@@ -1112,7 +1112,7 @@ ${database[protocol]['legalizer_read_meta_channel']}
 % endif
     };
     assign r_req_o.num_bytes = r_num_bytes;
-    assign r_req_o.start_lane = r_start_lane;
+    assign r_req_o.fifo_start_lane = r_fifo_start_lane;
     assign r_req_o.deadlock_free = opt_tf_q.deadlock_free;
 
     // Write meta channel and data path
@@ -1128,7 +1128,7 @@ ${database[used_write_protocols[0]]['legalizer_write_data_path']}
             num_bytes:    w_num_bytes,
             size:         opt_w_q.dst_size,
             burst:        opt_w_q.dst_axi_opt.burst,
-            start_lane:   w_start_lane,
+            fifo_start_lane:   w_fifo_start_lane,
             offset:       w_addr_offset,
             tailer:       w_tailer,
             shift:        w_shift,
@@ -1168,7 +1168,7 @@ ${database[protocol]['legalizer_write_data_path']}
                 num_bytes:    w_num_bytes,
                 size:         opt_w_q.dst_size,
                 burst:        opt_w_q.dst_axi_opt.burst,
-                start_lane:   w_start_lane,
+                fifo_start_lane:   w_fifo_start_lane,
                 offset:       w_addr_offset,
                 tailer:       w_tailer,
                 shift:        w_shift,

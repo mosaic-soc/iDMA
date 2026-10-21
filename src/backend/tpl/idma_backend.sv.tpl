@@ -213,11 +213,11 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
 
     /// The datapath read request type holds all the information required to configure the read
     /// part of the datapath. The type consists of:
-    /// - `offset`: The bus offset of the read
+    /// - `offset`: Initial byte position within the physical bus word
     /// - `num_bytes`: Payload bytes in this burst, excluding discarded read bytes
     /// - `size`: Resolved log2(bytes per beat)
     /// - `burst`: Address progression mode on the selected bus
-    /// - `start_lane`: FIFO lane receiving this burst's first payload byte
+    /// - `fifo_start_lane`: FIFO lane receiving this burst's first payload byte
     /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
     ///              bus width.
     /// - `shift`: The amount the data needs to be shifted
@@ -232,7 +232,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         tf_len_t              num_bytes;
         axi_pkg::size_t       size;
         axi_pkg::burst_t      burst;
-        offset_t              start_lane;
+        offset_t              fifo_start_lane;
         offset_t              offset;
         offset_t              tailer;
         offset_t              shift;
@@ -256,10 +256,10 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// The datapath write request type holds all the information required to configure the write
     /// part of the datapath. The type consists of:
     /// - `num_bytes`: The number of useful bytes in this legalized write request
-    /// - `offset`: The bus offset of the write
+    /// - `offset`: Initial byte position within the physical bus word
     /// - `size`: Resolved log2(bytes per beat)
     /// - `burst`: Address progression mode on the selected bus
-    /// - `start_lane`: FIFO lane containing this burst's first payload byte
+    /// - `fifo_start_lane`: FIFO lane containing this burst's first payload byte
     /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
     ///              bus width.
     /// - `shift`: The amount the data needs to be shifted
@@ -271,7 +271,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         tf_len_t              num_bytes;
         axi_pkg::size_t       size;
         axi_pkg::burst_t      burst;
-        offset_t              start_lane;
+        offset_t              fifo_start_lane;
         offset_t              offset;
         offset_t              tailer;
         offset_t              shift;
@@ -294,7 +294,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         r_dp_req_t          r_dp_req;
         read_meta_channel_t ar_req;
         tf_len_t            num_bytes;
-        offset_t            start_lane;
+        offset_t            fifo_start_lane;
         logic               deadlock_free;
     } idma_r_req_t;
 
@@ -306,7 +306,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
 % endif
         read_meta_channel_t ar_req;
         tf_len_t            num_bytes;
-        offset_t            start_lane;
+        offset_t            fifo_start_lane;
         logic               deadlock_free;
     } read_reservation_req_t;
 
@@ -361,7 +361,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     typedef struct packed {
         tf_len_t length;
         addr_t   addr;
-        // Position in the logical FIFO byte stream, independent of the bus address.
+        // FIFO position of the next payload byte; advances independently of the bus address.
         offset_t stream_lane;
         logic    valid;
         addr_t   base_addr;
@@ -626,7 +626,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             num_bytes:    idma_req_i.length,
             size:         axi_pkg::size_t'(OffsetWidth),
             burst:        idma_req_i.opt.src.burst,
-            start_lane:   '0,
+            fifo_start_lane:   '0,
             offset:       idma_req_i.src_addr[OffsetWidth-1:0],
             tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.src_addr[OffsetWidth-1:0]),
             shift:        OffsetWidth'(idma_req_i.src_addr[OffsetWidth-1:0]),
@@ -640,7 +640,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
 % endif
         };
         assign r_req.num_bytes = idma_req_i.length;
-        assign r_req.start_lane = OffsetWidth'(
+        assign r_req.fifo_start_lane = OffsetWidth'(
             idma_req_i.src_addr[OffsetWidth-1:0] - r_req.r_dp_req.shift
         );
 
@@ -654,7 +654,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             num_bytes:    idma_req_i.length,
             size:         axi_pkg::size_t'(OffsetWidth),
             burst:        idma_req_i.opt.dst.burst,
-            start_lane:   '0,
+            fifo_start_lane:   '0,
             offset:       idma_req_i.dst_addr[OffsetWidth-1:0],
             tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.dst_addr[OffsetWidth-1:0]),
             shift:        OffsetWidth'(- idma_req_i.dst_addr[OffsetWidth-1:0]),
@@ -845,10 +845,10 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         r_reservation_req.src_protocol = r_req.r_dp_req.src_protocol;
         r_reservation_req.src_head     = r_req.r_dp_req.src_head;
 % endif
-        r_reservation_req.ar_req        = r_req.ar_req;
-        r_reservation_req.num_bytes     = r_req.num_bytes;
-        r_reservation_req.start_lane    = r_req.start_lane;
-        r_reservation_req.deadlock_free = r_req.deadlock_free;
+        r_reservation_req.ar_req          = r_req.ar_req;
+        r_reservation_req.num_bytes       = r_req.num_bytes;
+        r_reservation_req.fifo_start_lane = r_req.fifo_start_lane;
+        r_reservation_req.deadlock_free   = r_req.deadlock_free;
     end
 
     cc_fall_through_register #(

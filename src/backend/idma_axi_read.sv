@@ -87,7 +87,7 @@ module idma_axi_read #(
     tf_len_t bytes_left_d, bytes_left_q, bytes_left;
     // One extra bit represents a full bus word, which does not fit in an index.
     typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
-    beat_bytes_t beat_bytes, beat_offset, available_bytes, payload_bytes;
+    beat_bytes_t beat_bytes, beat_offset, bytes_to_size_boundary, payload_bytes;
 
     // FIFO lane mask, rotated identically to the data in the transport layer.
     strb_t mask_in;
@@ -108,14 +108,15 @@ module idma_axi_read #(
     //--------------------------------------
     // In mask generation
     //--------------------------------------
-    assign bus_lane   = first_r_q ? r_dp_req_i.offset     : bus_lane_q;
-    assign fifo_lane  = first_r_q ? r_dp_req_i.start_lane : fifo_lane_q;
-    assign bytes_left = first_r_q ? r_dp_req_i.num_bytes  : bytes_left_q;
+    assign bus_lane   = first_r_q ? r_dp_req_i.offset          : bus_lane_q;
+    assign fifo_lane  = first_r_q ? r_dp_req_i.fifo_start_lane : fifo_lane_q;
+    assign bytes_left = first_r_q ? r_dp_req_i.num_bytes       : bytes_left_q;
     assign beat_bytes = beat_bytes_t'(1) << r_dp_req_i.size;
+    // Position within the selected-size access, rather than the full bus word.
     assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
-    assign available_bytes = beat_bytes - beat_offset;
-    assign payload_bytes = bytes_left < tf_len_t'(available_bytes)
-        ? beat_bytes_t'(bytes_left) : available_bytes;
+    assign bytes_to_size_boundary = beat_bytes - beat_offset;
+    assign payload_bytes = bytes_left < tf_len_t'(bytes_to_size_boundary)
+        ? beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
 
     // Each beat uses only its size-selected AXI lanes. The first beat can have a
     // prefix and the final beat excess bytes; neither belongs to the FIFO stream.
@@ -149,7 +150,7 @@ module idma_axi_read #(
             first_r_d = read_rsp_i.r.last;
             bus_lane_d = bus_lane;
             if (r_dp_req_i.burst == axi_pkg::BURST_INCR) begin
-                bus_lane_d = bus_lane + offset_t'(available_bytes);
+                bus_lane_d = bus_lane + offset_t'(bytes_to_size_boundary);
             end
             fifo_lane_d = fifo_lane + offset_t'(payload_bytes);
             bytes_left_d = bytes_left - tf_len_t'(payload_bytes);

@@ -121,19 +121,20 @@ module idma_axi_write #(
     offset_t fifo_lane_d, fifo_lane_q, fifo_lane;
     tf_len_t bytes_left_d, bytes_left_q, bytes_left;
     typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
-    beat_bytes_t beat_bytes, beat_offset, available_bytes, payload_bytes;
+    beat_bytes_t beat_bytes, beat_offset, bytes_to_size_boundary, payload_bytes;
 
     //--------------------------------------
     // Mask pre-calculation
     //--------------------------------------
-    assign bus_lane   = first_w ? w_dp_req_i.offset     : bus_lane_q;
-    assign fifo_lane  = first_w ? w_dp_req_i.start_lane : fifo_lane_q;
-    assign bytes_left = first_w ? w_dp_req_i.num_bytes  : bytes_left_q;
+    assign bus_lane   = first_w ? w_dp_req_i.offset          : bus_lane_q;
+    assign fifo_lane  = first_w ? w_dp_req_i.fifo_start_lane : fifo_lane_q;
+    assign bytes_left = first_w ? w_dp_req_i.num_bytes       : bytes_left_q;
     assign beat_bytes = beat_bytes_t'(1) << w_dp_req_i.size;
+    // Position within the selected-size access, rather than the full bus word.
     assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
-    assign available_bytes = beat_bytes - beat_offset;
-    assign payload_bytes = bytes_left < tf_len_t'(available_bytes)
-        ? beat_bytes_t'(bytes_left) : available_bytes;
+    assign bytes_to_size_boundary = beat_bytes - beat_offset;
+    assign payload_bytes = bytes_left < tf_len_t'(bytes_to_size_boundary)
+        ? beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
     // Data and valid rotate forward in the transport layer; ready/offer/consumed
     // rotate back by the same amount. FIXED repeats bus lanes, not FIFO lanes.
     assign buffer_shift_o = fifo_lane - bus_lane;
@@ -278,7 +279,7 @@ module idma_axi_write #(
         if (write_happening) begin
             bus_lane_d = bus_lane;
             if (w_dp_req_i.burst == axi_pkg::BURST_INCR) begin
-                bus_lane_d = bus_lane + offset_t'(available_bytes);
+                bus_lane_d = bus_lane + offset_t'(bytes_to_size_boundary);
             end
             fifo_lane_d = fifo_lane + offset_t'(payload_bytes);
             bytes_left_d = bytes_left - tf_len_t'(payload_bytes);
