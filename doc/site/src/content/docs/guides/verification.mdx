@@ -256,10 +256,20 @@ make idma_sim_all   # Generate compile.tcl + start.tcl (Questa) and compile.sh (
 
   ```bash
   make idma_sim_vlt_tb_idma_transpose_nd VERILATOR=verilator
+  make idma_sim_vlt_tb_idma_backend_axi
   make idma_sim_vlt_tb_idma_backend_rw_axi
   make idma_sim_vlt_backends
   make idma_sim_vlt_all VERILATOR=verilator
   ```
+
+  The handwritten `tb_idma_backend_axi` (formerly `tb_idma_backend_fixed_burst`)
+  tests plain copies and runtime sizes without job files. Its variants cover 32-
+  and 64-bit buses, a 128-bit bus with depth-two FIFOs, and full-width combined
+  shifting. AR, R, AW, W, and B are stalled independently (`StallPct`, default 30).
+  A changing-data FIXED source and a per-W-byte scoreboard check ordering even
+  when repeated writes overwrite the same memory address. Destination canaries
+  detect stray writes. Queued requests change sizes and safe mode before older
+  requests have finished.
 
   Generated backend targets follow `IDMA_BACKEND_IDS` and use each backend's
   `jobs/backend_<variant>/simple.txt` by default. Select another matching job name

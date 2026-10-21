@@ -479,6 +479,7 @@ testbenches:
 
 ```bash
 make idma_sim_vlt_tb_idma_backend_rw_axi
+make idma_sim_vlt_tb_idma_backend_axi
 make idma_sim_vlt_tb_idma_backend_rw_axi IDMA_VLT_JOB=mixed
 make idma_sim_vlt_backends
 make idma_sim_vlt_all
@@ -488,6 +489,10 @@ Each generated backend uses `jobs/backend_<variant>/simple.txt` by default.
 `IDMA_VLT_JOB` selects another job name, or `IDMA_VLT_JOB_FILE` supplies an explicit
 path. See the [verification guide](doc/site/src/content/docs/guides/verification.mdx)
 for configuration details.
+
+`tb_idma_backend_axi` is the handwritten AXI copy regression (formerly
+`tb_idma_backend_fixed_burst`). It needs no job files and covers runtime sizes,
+INCR/FIXED bursts, stalls, safe mode, and queued transfers.
 
 With [*Questa advanced simulator*](https://eda.sw.siemens.com/en-US/ic/questa/simulation/advanced-simulator/),
 a simulation can be launched using:
