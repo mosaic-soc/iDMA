@@ -203,6 +203,8 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     typedef logic [DataWidth-1:0] data_t;
     /// Offset type
     typedef logic [StrbWidth-1:0] strb_t;
+
+    `include "idma/byte_lane_functions.svh"
     /// Byte type
     typedef logic [7:0] byte_t;
 
@@ -372,7 +374,7 @@ ${rendered_read_ports[read_port]}
     % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift;
     % else:
-                buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
+                buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
     % endif
                 buffer_in_valid = ${rp}_buffer_in_valid;
                 buffer_in_beat  = ${rp}_buffer_in_beat;
@@ -387,7 +389,7 @@ ${rendered_read_ports[read_port]}
     % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift [r_dp_req_i.src_head];
     % else:
-                buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
+                buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
     % endif
                 buffer_in_valid = ${rp}_buffer_in_valid [r_dp_req_i.src_head];
                 buffer_in_beat  = ${rp}_buffer_in_beat [r_dp_req_i.src_head];
@@ -419,7 +421,7 @@ ${rendered_read_ports[read_port]}
 
 % endif
 % if one_read_port and 'axi' not in used_read_protocols:
-    assign buffer_in_shift = offset_t'(r_dp_req_i.offset - r_dp_req_i.fifo_start_lane);
+    assign buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
 % endif
     //--------------------------------------
     // Read Barrel shifter
@@ -626,7 +628,7 @@ ${rendered_read_ports[read_port]}
     //--------------------------------------
 
 % if one_write_port and used_write_protocols[0] != 'axi':
-    assign buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
+    assign buffer_out_shift = idma_lane_shift(w_dp_req_i.fifo_start_lane, w_dp_req_i.offset);
 % endif
     assign buffer_out_tmp           = {wr_data, wr_data} >> (buffer_out_shift*8);
     assign wr_beat                  = buffer_out_tmp[$bits(wr_beat)/8-1:0];
@@ -666,7 +668,7 @@ ${rendered_read_ports[read_port]}
         % if wp == 'axi':
             buffer_out_shift = ${wp}_buffer_out_shift;
         % else:
-            buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
+            buffer_out_shift = idma_lane_shift(w_dp_req_i.fifo_start_lane, w_dp_req_i.offset);
         % endif
             w_dp_req_ready   = ${wp}_w_dp_ready;
             buffer_out_ready = ${wp}_buffer_out_ready;
@@ -679,7 +681,7 @@ ${rendered_read_ports[read_port]}
         % if wp == 'axi':
             buffer_out_shift = ${wp}_buffer_out_shift[w_dp_req_i.dst_head];
         % else:
-            buffer_out_shift = offset_t'(w_dp_req_i.fifo_start_lane - w_dp_req_i.offset);
+            buffer_out_shift = idma_lane_shift(w_dp_req_i.fifo_start_lane, w_dp_req_i.offset);
         % endif
             w_dp_req_ready   = ${wp}_w_dp_ready [w_dp_req_i.dst_head];
             buffer_out_ready = ${wp}_buffer_out_ready [w_dp_req_i.dst_head];

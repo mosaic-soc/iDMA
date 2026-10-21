@@ -63,6 +63,7 @@ module idma_obi_read #(
     /// Ready from Buffer
     input  strb_t buffer_in_ready_i
 );
+    `include "idma/byte_lane_functions.svh"
     // read aligned in mask. needs to be shifted together with the data before
     // it can be used to mask valid data flowing into the buffer
     strb_t read_aligned_in_mask;
@@ -96,12 +97,7 @@ module idma_obi_read #(
     // first msk|----full mask----|last msk
 
     // This legalized request fits one physical beat; select its payload bytes directly.
-    always_comb begin : proc_payload_mask
-        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
-            read_aligned_in_mask[lane] = lane >= int'(r_dp_req_i.offset) &&
-                lane < int'(r_dp_req_i.offset) + int'(r_dp_req_i.num_bytes);
-        end
-    end
+    assign read_aligned_in_mask = idma_payload_mask(r_dp_req_i.offset, int'(r_dp_req_i.num_bytes));
 
 
     //--------------------------------------
@@ -114,7 +110,7 @@ module idma_obi_read #(
     // a barrel shifter is a concatenation of the same array with twice and a normal
     // shift. Optimized for Synopsys DesignWare.
     assign buffer_in_o = read_rsp_i.r.rdata;
-    assign buffer_shift = r_dp_req_i.offset - r_dp_req_i.fifo_start_lane;
+    assign buffer_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
     assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift;
 
 

@@ -326,8 +326,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         idma_pkg::protocol_e    dst_protocol;
         idma_pkg::multihead_t   src_head;
         idma_pkg::multihead_t   dst_head;
-        offset_t                read_shift;
-        offset_t                write_shift;
         // Resolved sizes are latched independently with the read/write options.
         axi_pkg::size_t         src_size;
         axi_pkg::size_t         dst_size;
@@ -352,6 +350,7 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         // FIFO position of the next payload byte; advances independently of the bus address.
         offset_t stream_lane;
         logic    valid;
+        // Original request address, retained across legalized bursts and MX plane changes.
         addr_t   base_addr;
         user_t   user;
     } idma_mut_tf_t;

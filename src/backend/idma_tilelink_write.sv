@@ -85,6 +85,7 @@ module idma_tilelink_write #(
     /// Logical byte positions consumed by an accepted write
     output strb_t buffer_out_consumed_o
 );
+    `include "idma/byte_lane_functions.svh"
     // offsets needed for masks to empty buffer
     strb_t w_first_mask;
     strb_t w_last_mask;
@@ -128,8 +129,8 @@ module idma_tilelink_write #(
 
     // write align masks
     assign end_lane = w_dp_req_i.offset + $clog2(StrbWidth)'(w_dp_req_i.num_bytes);
-    assign w_first_mask = '1 << w_dp_req_i.offset;
-    assign w_last_mask  = '1 >> (StrbWidth - end_lane);
+    assign w_first_mask = idma_payload_mask(w_dp_req_i.offset, StrbWidth);
+    assign w_last_mask  = idma_payload_mask('0, int'(end_lane));
 
     //--------------------------------------
     // Out mask generation -> (mask)

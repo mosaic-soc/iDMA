@@ -399,9 +399,6 @@ llen_t'(${read_protocol.capitalize()}BurstLen);
     end
 % endif
 
-    assign r_addr_offset = r_tf_q.addr[OffsetWidth-1:0];
-    assign r_beat_mask = offset_t'((page_len_t'(1) << opt_tf_q.src_size) - 1'b1);
-    assign r_beat_offset = r_addr_offset & r_beat_mask;
     always_comb begin : gen_r_burst_num_bytes_cap
         r_burst_num_bytes_cap = page_len_t'(1) <<
                                (int'(r_max_llen) + int'(opt_tf_q.src_size));
@@ -594,9 +591,6 @@ llen_t'(${write_protocol.capitalize()}BurstLen);
     end
 % endif
 
-    assign w_addr_offset = w_tf_q.addr[OffsetWidth-1:0];
-    assign w_beat_mask = offset_t'((page_len_t'(1) << opt_w_q.dst_size) - 1'b1);
-    assign w_beat_offset = w_addr_offset & w_beat_mask;
     assign w_burst_num_bytes_cap = (page_len_t'(1) <<
         (int'(w_max_llen) + int'(opt_w_q.dst_size))) - page_len_t'(w_beat_offset);
 
@@ -735,12 +729,15 @@ w_tf_q.length[PageAddrWidth:0] ),
     function automatic load_t load(idma_req_t req);
         load_t l;
         l = '0;
+        // Separate shifters pack payload bytes from FIFO lane zero. Combined shifting
+        // instead places them at the destination's initial lane, leaving W unshifted.
         // load all three mutable objects (source, destination, option)
         l.r_tf = '{
             length: req.length,
             addr:   req.src_addr,
             valid:   1'b1,
             base_addr: req.src_addr,
+            stream_lane: CombinedShifter ? req.dst_addr[OffsetWidth-1:0] : '0,
             default: '0
         };
         // destination or write
@@ -749,6 +746,7 @@ w_tf_q.length[PageAddrWidth:0] ),
             addr:   req.dst_addr,
             valid:   1'b1,
             base_addr: req.dst_addr,
+            stream_lane: CombinedShifter ? req.dst_addr[OffsetWidth-1:0] : '0,
             user: req.user,
             default: '0
         };
@@ -784,6 +782,9 @@ w_tf_q.length[PageAddrWidth:0] ),
                 l.mx_r.scl    = 1'b1;
                 l.r_tf.addr   = {req.scale_addr[AddrWidth-1:OffsetWidth],
                                  {OffsetWidth{1'b0}}};
+                // Dequant starts on the scale plane, not at the original data address.
+                l.r_tf.stream_lane = l.r_tf.addr[OffsetWidth-1:0] -
+                                     req.src_addr[OffsetWidth-1:0];
                 l.r_tf.length = mx_rchunk(req.scale_addr,
                                           mx_rseg(len_t'(req.length), l.mx_r.g32));
             end else begin
@@ -804,8 +805,6 @@ w_tf_q.length[PageAddrWidth:0] ),
             dst_protocol:   req.opt.dst_protocol,
             src_head:       req.opt.src_head,
             dst_head:       req.opt.dst_head,
-            read_shift:     '0,
-            write_shift:    '0,
             // Disabled controls retain the physical bus size, including for non-AXI ports.
             src_size:       req.opt.beo.src_size_enable
                                 ? req.opt.beo.src_size : axi_pkg::size_t'(OffsetWidth),
@@ -828,15 +827,6 @@ w_tf_q.length[PageAddrWidth:0] ),
             super_last:     req.opt.last,
             compute:        req.opt.compute
         };
-        // determine shift amount
-        if (CombinedShifter) begin
-            l.opt.read_shift  = req.src_addr[OffsetWidth-1:0] -
-                                req.dst_addr[OffsetWidth-1:0];
-            l.opt.write_shift = '0;
-        end else begin
-            l.opt.read_shift  =   req.src_addr[OffsetWidth-1:0];
-            l.opt.write_shift = - req.dst_addr[OffsetWidth-1:0];
-        end
         return l;
     endfunction
 
@@ -950,6 +940,12 @@ w_tf_q.length[PageAddrWidth:0] ),
             end else begin
                 mx_r_d.on     = 1'b0;
             end
+            // A new plane segment establishes its own FIFO phase. Do not carry
+            // the previous segment's byte count into this unrelated address range.
+            if (r_tf_d.valid) begin
+                r_tf_d.stream_lane = r_tf_d.addr[OffsetWidth-1:0] -
+                                     r_tf_q.base_addr[OffsetWidth-1:0];
+            end
         end
         if (EnableCompute && mx_w_q.on && w_tf_q.valid && w_done) begin
             // quant destination: the group's data, then its scale chunk
@@ -973,6 +969,10 @@ w_tf_q.length[PageAddrWidth:0] ),
                 w_done        = 1'b0;
             end else begin
                 mx_w_d.on     = 1'b0;
+            end
+            if (w_tf_d.valid) begin
+                w_tf_d.stream_lane = w_tf_d.addr[OffsetWidth-1:0] -
+                                     w_tf_q.base_addr[OffsetWidth-1:0];
             end
         end
 
@@ -1024,31 +1024,23 @@ w_tf_q.length[PageAddrWidth:0] ),
     // Connect outputs
     //--------------------------------------
 
-    // Preserve the legacy compute/combined-shifter mapping. Plain copies use an address-
-    // independent FIFO index, which also advances when FIXED bursts retain the same address.
-    always_comb begin : gen_stream_mapping
-        r_fifo_start_lane = r_tf_q.stream_lane;
-        w_fifo_start_lane = w_tf_q.stream_lane;
-        if (CombinedShifter) begin
-            r_fifo_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
-            w_fifo_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
-        end
-% if compute_eligible:
-        if (EnableCompute && opt_tf_q.compute.enable) begin
-            r_fifo_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
-        end
-        if (EnableCompute && opt_w_q.compute.enable) begin
-            w_fifo_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
-        end
-% endif
-    end
+    // Segment setup establishes the FIFO phase; each accepted burst advances it.
+    assign r_fifo_start_lane = r_tf_q.stream_lane;
+    assign w_fifo_start_lane = w_tf_q.stream_lane;
 
     // AxADDR retains the selected narrow lane instead of rounding down to a full bus word.
     // All divisions/modulo by the runtime power-of-two size use shifts and masks.
+    assign r_addr_offset = r_tf_q.addr[OffsetWidth-1:0];
+    assign r_beat_mask = offset_t'((page_len_t'(1) << opt_tf_q.src_size) - 1'b1);
+    assign r_beat_offset = r_addr_offset & r_beat_mask;
     assign r_axi_addr = r_tf_q.addr & ~addr_t'(r_beat_mask);
-    assign w_axi_addr = w_tf_q.addr & ~addr_t'(w_beat_mask);
     assign r_num_beats = axi_pkg::len_t'(
         (r_num_bytes + page_len_t'(r_beat_offset) - page_len_t'(1)) >> opt_tf_q.src_size);
+
+    assign w_addr_offset = w_tf_q.addr[OffsetWidth-1:0];
+    assign w_beat_mask = offset_t'((page_len_t'(1) << opt_w_q.dst_size) - 1'b1);
+    assign w_beat_offset = w_addr_offset & w_beat_mask;
+    assign w_axi_addr = w_tf_q.addr & ~addr_t'(w_beat_mask);
     assign w_num_beats = axi_pkg::len_t'(
         (w_num_bytes + page_len_t'(w_beat_offset) - page_len_t'(1)) >> opt_w_q.dst_size);
 

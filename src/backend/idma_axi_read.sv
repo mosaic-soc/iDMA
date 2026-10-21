@@ -77,6 +77,7 @@ module idma_axi_read #(
     /// Ready from Buffer
     input  strb_t buffer_in_ready_i
 );
+    `include "idma/byte_lane_functions.svh"
     // Physical AXI lanes carrying payload in the current beat, before FIFO alignment.
     strb_t read_aligned_in_mask;
 
@@ -86,8 +87,7 @@ module idma_axi_read #(
     offset_t fifo_lane_d, fifo_lane_q, fifo_lane;
     tf_len_t bytes_left_d, bytes_left_q, bytes_left;
     // One extra bit represents a full bus word, which does not fit in an index.
-    typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
-    beat_bytes_t beat_bytes, beat_offset, bytes_to_size_boundary, payload_bytes;
+    idma_beat_bytes_t bytes_to_size_boundary, payload_bytes;
 
     // FIFO lane mask, rotated identically to the data in the transport layer.
     strb_t mask_in;
@@ -111,21 +111,14 @@ module idma_axi_read #(
     assign bus_lane   = first_r_q ? r_dp_req_i.offset          : bus_lane_q;
     assign fifo_lane  = first_r_q ? r_dp_req_i.fifo_start_lane : fifo_lane_q;
     assign bytes_left = first_r_q ? r_dp_req_i.num_bytes       : bytes_left_q;
-    assign beat_bytes = beat_bytes_t'(1) << r_dp_req_i.size;
-    // Position within the selected-size access, rather than the full bus word.
-    assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
-    assign bytes_to_size_boundary = beat_bytes - beat_offset;
+    assign bytes_to_size_boundary = idma_bytes_to_size_boundary(
+        bus_lane, r_dp_req_i.size);
     assign payload_bytes = bytes_left < tf_len_t'(bytes_to_size_boundary)
-        ? beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
+        ? idma_beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
 
     // Each beat uses only its size-selected AXI lanes. The first beat can have a
     // prefix and the final beat excess bytes; neither belongs to the FIFO stream.
-    always_comb begin : proc_in_mask_generator
-        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
-            read_aligned_in_mask[lane] = lane >= int'(bus_lane) &&
-                                        lane < int'(bus_lane) + int'(payload_bytes);
-        end
-    end
+    assign read_aligned_in_mask = idma_payload_mask(bus_lane, int'(payload_bytes));
 
 
     //--------------------------------------
@@ -134,7 +127,7 @@ module idma_axi_read #(
     // The transport layer rotates the raw data with this same shift. FIXED beats
     // repeat their bus lanes while their payload advances through the FIFO lanes.
     assign buffer_in_o = read_rsp_i.r.data;
-    assign buffer_shift_o = bus_lane - fifo_lane;
+    assign buffer_shift_o = idma_lane_shift(bus_lane, fifo_lane);
     assign mask_in = strb_t'({read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift_o);
 
 

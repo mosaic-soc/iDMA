@@ -92,6 +92,7 @@ module idma_axi_write #(
     /// External write-strobe mask (ANDed into wstrb); tie to '1 when unused
     input  strb_t mask_ext_i
 );
+    `include "idma/byte_lane_functions.svh"
     // corresponds to the strobe: the write aligned data that is currently valid in the buffer
     strb_t mask_out;
     // Byte positions belonging to this write beat, before suppressing compute-invalid bytes.
@@ -116,8 +117,7 @@ module idma_axi_write #(
     offset_t bus_lane_d, bus_lane_q, bus_lane;
     offset_t fifo_lane_d, fifo_lane_q, fifo_lane;
     tf_len_t bytes_left_d, bytes_left_q, bytes_left;
-    typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
-    beat_bytes_t beat_bytes, beat_offset, bytes_to_size_boundary, payload_bytes;
+    idma_beat_bytes_t bytes_to_size_boundary, payload_bytes;
 
     //--------------------------------------
     // Mask pre-calculation
@@ -125,15 +125,13 @@ module idma_axi_write #(
     assign bus_lane   = first_w_q ? w_dp_req_i.offset          : bus_lane_q;
     assign fifo_lane  = first_w_q ? w_dp_req_i.fifo_start_lane : fifo_lane_q;
     assign bytes_left = first_w_q ? w_dp_req_i.num_bytes       : bytes_left_q;
-    assign beat_bytes = beat_bytes_t'(1) << w_dp_req_i.size;
-    // Position within the selected-size access, rather than the full bus word.
-    assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
-    assign bytes_to_size_boundary = beat_bytes - beat_offset;
+    assign bytes_to_size_boundary = idma_bytes_to_size_boundary(
+        bus_lane, w_dp_req_i.size);
     assign payload_bytes = bytes_left < tf_len_t'(bytes_to_size_boundary)
-        ? beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
+        ? idma_beat_bytes_t'(bytes_left) : bytes_to_size_boundary;
     // Data and valid rotate forward in the transport layer; ready/offer/consumed
     // rotate back by the same amount. FIXED repeats bus lanes, not FIFO lanes.
-    assign buffer_shift_o = fifo_lane - bus_lane;
+    assign buffer_shift_o = idma_lane_shift(fifo_lane, bus_lane);
 
     //--------------------------------------
     // Write meta channel
@@ -149,14 +147,9 @@ module idma_axi_write #(
     //--------------------------------------
     // only pop the data actually needed for write from the buffer,
     // determine valid data to pop by calculation the wstrb
-    always_comb begin : proc_out_mask_generator
-        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
-            logical_mask_out[lane] = lane >= int'(bus_lane) &&
-                                    lane < int'(bus_lane) + int'(payload_bytes);
-        end
-        // external mask (OTF compute)
-        mask_out = logical_mask_out & mask_ext_i;
-    end
+    assign logical_mask_out = idma_payload_mask(bus_lane, int'(payload_bytes));
+    // external mask (OTF compute)
+    assign mask_out = logical_mask_out & mask_ext_i;
 
 
     //--------------------------------------

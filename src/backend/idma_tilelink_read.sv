@@ -72,6 +72,7 @@ module idma_tilelink_read #(
     /// Ready from Buffer
     input  strb_t buffer_in_ready_i
 );
+    `include "idma/byte_lane_functions.svh"
     // offsets needed for masks to empty buffer
     strb_t r_first_mask;
     strb_t r_last_mask;
@@ -113,8 +114,8 @@ module idma_tilelink_read #(
 
     // read align masks
     assign end_lane = r_dp_req_i.offset + $clog2(StrbWidth)'(r_dp_req_i.num_bytes);
-    assign r_first_mask = '1 << r_dp_req_i.offset;
-    assign r_last_mask  = '1 >> (StrbWidth - end_lane);
+    assign r_first_mask = idma_payload_mask(r_dp_req_i.offset, StrbWidth);
+    assign r_last_mask  = idma_payload_mask('0, int'(end_lane));
 
     //--------------------------------------
     // Read meta channel
@@ -153,7 +154,7 @@ module idma_tilelink_read #(
     // a barrel shifter is a concatenation of the same array with twice and a normal
     // shift. Optimized for Synopsys DesignWare.
     assign buffer_in_o = read_rsp_i.d.data;
-    assign buffer_shift = r_dp_req_i.offset - r_dp_req_i.fifo_start_lane;
+    assign buffer_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
     assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift;
 
 

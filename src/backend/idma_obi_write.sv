@@ -78,6 +78,7 @@ module idma_obi_write #(
     /// External write-strobe mask (ANDed into be); tie to '1 when unused
     input  strb_t mask_ext_i
 );
+    `include "idma/byte_lane_functions.svh"
     // corresponds to the strobe: the write aligned data that is currently valid in the buffer
     strb_t mask_out;
     // write mask before the external mask is applied
@@ -102,12 +103,7 @@ module idma_obi_write #(
     // determine valid data to pop by calculation the be
 
     // This legalized request fits one physical beat; select its payload bytes directly.
-    always_comb begin : proc_payload_mask
-        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
-            logical_mask_out[lane] = lane >= int'(w_dp_req_i.offset) &&
-                lane < int'(w_dp_req_i.offset) + int'(w_dp_req_i.num_bytes);
-        end
-    end
+    assign logical_mask_out = idma_payload_mask(w_dp_req_i.offset, int'(w_dp_req_i.num_bytes));
 
     // external mask (OTF compute)
     assign mask_out = logical_mask_out & mask_ext_i;

@@ -76,6 +76,7 @@ module idma_axil_write #(
     /// Logical byte positions consumed by an accepted write
     output strb_t buffer_out_consumed_o
 );
+    `include "idma/byte_lane_functions.svh"
     // corresponds to the strobe: the write aligned data that is currently valid in the buffer
     strb_t mask_out;
 
@@ -107,12 +108,7 @@ module idma_axil_write #(
     // determine valid data to pop by calculation the wstrb
 
     // This legalized request fits one physical beat; select its payload bytes directly.
-    always_comb begin : proc_payload_mask
-        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
-            mask_out[lane] = lane >= int'(w_dp_req_i.offset) &&
-                lane < int'(w_dp_req_i.offset) + int'(w_dp_req_i.num_bytes);
-        end
-    end
+    assign mask_out = idma_payload_mask(w_dp_req_i.offset, int'(w_dp_req_i.num_bytes));
 
     //--------------------------------------
     // Write control
