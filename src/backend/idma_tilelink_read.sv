@@ -19,6 +19,8 @@ module idma_tilelink_read #(
     parameter type byte_t = logic,
     /// Offset type
     parameter type strb_t = logic,
+    /// Physical bus and FIFO lane index type
+    parameter type offset_t = logic,
 
     /// TileLink Request channel type
     parameter type read_req_t = logic,
@@ -65,6 +67,8 @@ module idma_tilelink_read #(
 
     /// Data to Buffer
     output byte_t [StrbWidth-1:0] buffer_in_o,
+    /// Bus-to-FIFO rotation, also used for the valid mask
+    output offset_t buffer_shift_o,
     /// Valid to Buffer
     output strb_t buffer_in_valid_o,
     /// A response beat the read side can take, before the buffer masks and readiness
@@ -95,9 +99,6 @@ module idma_tilelink_read #(
     // in mask is write aligned: it is the result of the read aligned in mask
     // that is shifted together with the data in the barrel shifter
     strb_t mask_in;
-
-    // Wrap the bus-to-FIFO rotation at the physical byte-lane width.
-    logic [$clog2(StrbWidth)-1:0] buffer_shift;
 
     // inbound control signals to the read buffer: controlled by the read process
     logic  in_valid;
@@ -154,8 +155,8 @@ module idma_tilelink_read #(
     // a barrel shifter is a concatenation of the same array with twice and a normal
     // shift. Optimized for Synopsys DesignWare.
     assign buffer_in_o = read_rsp_i.d.data;
-    assign buffer_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
-    assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift;
+    assign buffer_shift_o = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
+    assign mask_in     = {read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift_o;
 
 
     //--------------------------------------

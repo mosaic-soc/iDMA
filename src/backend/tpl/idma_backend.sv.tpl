@@ -180,6 +180,34 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     output idma_busy_t busy_o
 );
 
+    /// Runtime read-size support implemented by this backend's selected protocols.
+    function automatic logic protocol_supports_runtime_read_size(
+        input idma_pkg::protocol_e protocol
+    );
+        case (protocol)
+% for protocol in used_read_protocols:
+    % if database[protocol]['supports_runtime_read_size']:
+            idma_pkg::${database[protocol]['protocol_enum']}: return 1'b1;
+    % endif
+% endfor
+            default: return 1'b0;
+        endcase
+    endfunction
+
+    /// Runtime write-size support implemented by this backend's selected protocols.
+    function automatic logic protocol_supports_runtime_write_size(
+        input idma_pkg::protocol_e protocol
+    );
+        case (protocol)
+% for protocol in used_write_protocols:
+    % if database[protocol]['supports_runtime_write_size']:
+            idma_pkg::${database[protocol]['protocol_enum']}: return 1'b1;
+    % endif
+% endfor
+            default: return 1'b0;
+        endcase
+    endfunction
+
     /// Extra write-descriptor slots covering the compute (transpose) tile-fill latency.
 % if compute_eligible:
     localparam int unsigned ComputeFifoDepth = EnableCompute ? StrbWidth : 32'd0;
@@ -1125,19 +1153,21 @@ w_req.decouple_aw || (w_req.w_dp_req.dst_protocol inside {\
     `ASSERT(SourceSizeValid,
             req_valid_i && req_ready_o && idma_req_i.opt.beo.src_size_enable |->
                 int'(idma_req_i.opt.beo.src_size) <= OffsetWidth &&
-                idma_req_i.opt.src_protocol == idma_pkg::AXI,
-            clk_i, !rst_ni, "Runtime source size must fit the bus and requires AXI")
+                protocol_supports_runtime_read_size(idma_req_i.opt.src_protocol),
+            clk_i, !rst_ni,
+            "Runtime source size must fit the bus and be supported by the selected read protocol")
     `ASSERT(DestinationSizeValid,
             req_valid_i && req_ready_o && idma_req_i.opt.beo.dst_size_enable |->
                 int'(idma_req_i.opt.beo.dst_size) <= OffsetWidth &&
-                idma_req_i.opt.dst_protocol == idma_pkg::AXI,
-            clk_i, !rst_ni, "Runtime destination size must fit the bus and requires AXI")
+                protocol_supports_runtime_write_size(idma_req_i.opt.dst_protocol),
+            clk_i, !rst_ni,
+            "Runtime destination size must fit the bus and be supported by the selected write protocol")
     `ASSERT(RuntimeSizeConfigurationSupported,
             req_valid_i && req_ready_o &&
                 (idma_req_i.opt.beo.src_size_enable || idma_req_i.opt.beo.dst_size_enable) |->
                 HardwareLegalizer && !CombinedShifter && !idma_req_i.opt.compute.enable,
             clk_i, !rst_ni,
-            "Runtime AXI sizes require the hardware legalizer, separate shifters and no compute")
+            "Runtime sizes require the hardware legalizer, separate shifters and no compute")
     `ASSERT(SourceFixedSizeAligned,
             req_valid_i && req_ready_o && idma_req_i.opt.src_protocol == idma_pkg::AXI &&
                 idma_req_i.opt.src.burst == axi_pkg::BURST_FIXED |->

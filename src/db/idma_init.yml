@@ -10,6 +10,9 @@ protocol_enum: "INIT"
 full_name: "Memory Init"
 tb_define: "PROT_INIT"
 bursts: "not_supported"
+# Implemented runtime transfer-size support, not merely the presence of byte strobes.
+supports_runtime_read_size: false
+supports_runtime_write_size: false
 read_meta_channel: "req_chan"
 write_meta_channel: "req_chan"
 meta_channel_width: "localparam int unsigned init_req_chan_width = $bits(init_req_chan_t);"
@@ -59,6 +62,7 @@ read_template: |
         .StrbWidth        ( StrbWidth           ),
         .byte_t           ( byte_t              ),
         .strb_t           ( strb_t              ),
+        .offset_t         ( offset_t            ),
         .r_dp_req_t       ( r_dp_req_t          ),
         .r_dp_rsp_t       ( r_dp_rsp_t          ),
         .read_meta_chan_t ( read_meta_channel_t ),
@@ -77,6 +81,7 @@ read_template: |
         .read_req_o        ( ${read_request} ),
         .read_rsp_i        ( ${read_response} ),
         .buffer_in_o       ( ${buffer_in} ),
+        .buffer_shift_o    ( ${buffer_in_shift} ),
         .buffer_in_valid_o ( ${buffer_in_valid} ),
         .buffer_in_beat_o  ( ${buffer_in_beat} ),
         .buffer_in_ready_i ( buffer_in_ready )

@@ -213,14 +213,12 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     % for p in used_read_protocols:
     strb_t ${mh_format['ar'][p]}${p}_buffer_in_valid;
     logic  ${mh_format['ar'][p]}${p}_buffer_in_beat;
+    offset_t ${mh_format['ar'][p]}${p}_buffer_in_shift;
     % endfor
 % endif
     strb_t buffer_in_valid;
     strb_t buffer_in_ready;
     offset_t buffer_in_shift;
-% if not one_read_port and 'axi' in used_read_protocols:
-    offset_t ${mh_format['ar']['axi']}axi_buffer_in_shift;
-% endif
     // a read beat before the buffer masks
     logic  buffer_in_beat;
 
@@ -371,11 +369,7 @@ ${rendered_read_ports[read_port]}
                 r_dp_valid_o    = ${rp}_r_dp_valid;
 
                 buffer_in       = ${rp}_buffer_in;
-    % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift;
-    % else:
-                buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
-    % endif
                 buffer_in_valid = ${rp}_buffer_in_valid;
                 buffer_in_beat  = ${rp}_buffer_in_beat;
             end
@@ -386,11 +380,7 @@ ${rendered_read_ports[read_port]}
                 r_dp_valid_o    = ${rp}_r_dp_valid [r_dp_req_i.src_head];
 
                 buffer_in       = ${rp}_buffer_in [r_dp_req_i.src_head];
-    % if rp == 'axi':
                 buffer_in_shift = ${rp}_buffer_in_shift [r_dp_req_i.src_head];
-    % else:
-                buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
-    % endif
                 buffer_in_valid = ${rp}_buffer_in_valid [r_dp_req_i.src_head];
                 buffer_in_beat  = ${rp}_buffer_in_beat [r_dp_req_i.src_head];
             end
@@ -419,9 +409,6 @@ ${rendered_read_ports[read_port]}
         end
     end
 
-% endif
-% if one_read_port and 'axi' not in used_read_protocols:
-    assign buffer_in_shift = idma_lane_shift(r_dp_req_i.offset, r_dp_req_i.fifo_start_lane);
 % endif
     //--------------------------------------
     // Read Barrel shifter

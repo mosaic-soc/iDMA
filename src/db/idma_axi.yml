@@ -10,6 +10,9 @@ protocol_enum: "AXI"
 full_name: "AXI4+ATOP"
 tb_define: "PROT_AXI4"
 bursts: "split_at_page_boundary"
+# Implemented runtime transfer-size support, not merely the presence of byte strobes.
+supports_runtime_read_size: true
+supports_runtime_write_size: true
 page_size: 4096
 max_beats_per_burst: 256
 supports_fixed_bursts: "true"
