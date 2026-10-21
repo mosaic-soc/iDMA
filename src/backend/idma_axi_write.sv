@@ -284,7 +284,28 @@ module idma_axi_write #(
             clk_i, !rst_ni, "Accepted AXI write beats must contain logical payload bytes")
     `ASSERT(WriteRemainingNonzero, w_dp_valid_i |-> bytes_left != '0,
             clk_i, !rst_ni, "Pending AXI writes must have logical payload bytes remaining")
-    `ASSERT(WriteStateStableWhenStalled, write_req_o.w_valid && !write_rsp_i.w_ready |=>
+    // Compute may suppress strobes, but its logical positions still count toward
+    // burst completion and must be reported as consumed even for a zero-strobe beat.
+    `ASSERT(WriteByteConservation, write_happening |->
+                $countones(buffer_out_consumed_o) == int'(payload_bytes) &&
+                tf_len_t'(payload_bytes) <= bytes_left,
+            clk_i, !rst_ni, "An AXI write beat did not consume exactly its logical payload bytes")
+    `ASSERT(WriteStrobesWithinPayload, write_req_o.w_valid |->
+                (write_req_o.w.strb & ~logical_mask_out) == '0,
+            clk_i, !rst_ni, "AXI WSTRB selects bytes outside the current logical payload")
+    `ASSERT(WritePayloadWithinSize, w_dp_valid_i |->
+                int'(beat_offset) + int'(payload_bytes) <= int'(beat_bytes),
+            clk_i, !rst_ni, "AXI write payload extends beyond the selected-size access")
+    `ASSERT(WritePopOnlyOnHandshake, !write_happening |->
+                buffer_out_ready_o == '0 && buffer_out_consumed_o == '0,
+            clk_i, !rst_ni, "AXI write bytes were consumed without a W handshake")
+    `ASSERT(WriteCursorProgress, write_happening |=>
+                fifo_lane_q == offset_t'($past(fifo_lane) + $past(payload_bytes)) &&
+                bytes_left_q == $past(bytes_left) - tf_len_t'($past(payload_bytes)) &&
+                bus_lane_q == ($past(w_dp_req_i.burst) == axi_pkg::BURST_INCR
+                    ? offset_t'($past(bus_lane) + $past(bytes_to_size_boundary)) : $past(bus_lane)),
+            clk_i, !rst_ni, "AXI write FIFO cursor or remaining byte count advanced incorrectly")
+    `ASSERT(WriteStateStableWhenStalled, !write_happening |=>
                 $stable({first_w_q, bus_lane_q, fifo_lane_q, bytes_left_q}),
             clk_i, !rst_ni, "AXI write position changed without accepting a beat")
     `ASSERT(WriteStableWhenStalled, write_req_o.w_valid && !write_rsp_i.w_ready |=>

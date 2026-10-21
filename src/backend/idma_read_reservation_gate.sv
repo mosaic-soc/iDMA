@@ -89,12 +89,10 @@ module idma_read_reservation_gate #(
       lane_reservation[lane] = usage_t'(complete_lane_rows) +
           usage_t'(lane_distance < byte_remainder);
 
-      // A pop in the current cycle frees an entry in time for the accepted request.
+      // Admit against registered usage only. Current pops update the counters at the
+      // edge, making their credits available next cycle without a WREADY-to-ARVALID path.
       projected_usage = {1'b0, lane_usage[lane]} + {1'b0, lane_reservation[lane]};
       available_capacity = (UsageWidth + 1)'(BufferDepth);
-      // The following line would save a cycle but make ar_valid dependent on w_ready, which
-      // produces a combinational loop, which we don't want.
-      // available_capacity = available_capacity + buffer_pop_i[lane];
       lane_fits[lane] = projected_usage <= available_capacity;
     end
   end
@@ -147,6 +145,12 @@ module idma_read_reservation_gate #(
             ar_valid_i && deadlock_free_i |-> lane_reservation[lane] <= usage_t'(BufferDepth),
             clk_i, !rst_ni,
             "A deadlock-free read request requires more entries than one byte-lane FIFO holds")
+    `ASSERT(SafeAdmissionWithinCapacity,
+            ar_handshake && deadlock_free_i |->
+                {1'b0, lane_usage[lane]} + {1'b0, lane_reservation[lane]} <=
+                    (UsageWidth + 1)'(BufferDepth),
+            clk_i, !rst_ni,
+            "A deadlock-free read was accepted without enough reserved byte-lane capacity")
   end
 
   `ASSERT_INIT(StrbWidthAtLeastTwo, StrbWidth >= 2, "StrbWidth must be at least two bytes")
