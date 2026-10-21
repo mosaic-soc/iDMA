@@ -199,8 +199,25 @@ module idma_axi_read #(
     `ASSERT(ReadLastMatchesLength, read_rsp_i.r_valid && read_req_o.r_ready |->
                 read_rsp_i.r.last == (bytes_left == tf_len_t'(payload_bytes)),
             clk_i, !rst_ni, "AXI RLAST must coincide with the final payload byte")
+    // Count selected bytes, not AXI beat width: prefix and final excess bytes must
+    // never become FIFO entries or consume reservation credits.
+    `ASSERT(ReadByteConservation, in_valid |->
+                $countones(buffer_in_valid_o) == int'(payload_bytes) &&
+                tf_len_t'(payload_bytes) <= bytes_left,
+            clk_i, !rst_ni, "An AXI read beat did not push exactly its remaining payload bytes")
+    `ASSERT(ReadPushOnlyOnHandshake, !in_valid |-> buffer_in_valid_o == '0,
+            clk_i, !rst_ni, "AXI read bytes entered the FIFO without an R handshake")
+    `ASSERT(ReadPayloadWithinSize, r_dp_valid_i |->
+                payload_bytes <= bytes_to_size_boundary,
+            clk_i, !rst_ni, "AXI read payload extends beyond the selected-size access")
+    `ASSERT(ReadCursorProgress, in_valid |=>
+                fifo_lane_q == offset_t'($past(fifo_lane) + $past(payload_bytes)) &&
+                bytes_left_q == $past(bytes_left) - tf_len_t'($past(payload_bytes)) &&
+                bus_lane_q == ($past(r_dp_req_i.burst) == axi_pkg::BURST_INCR
+                    ? offset_t'($past(bus_lane) + $past(bytes_to_size_boundary)) : $past(bus_lane)),
+            clk_i, !rst_ni, "AXI read FIFO cursor or remaining byte count advanced incorrectly")
     `ASSERT(ReadStateStableWhenStalled,
-            read_rsp_i.r_valid && !read_req_o.r_ready |=>
+            !in_valid |=>
                 $stable({first_r_q, bus_lane_q, fifo_lane_q, bytes_left_q}),
             clk_i, !rst_ni, "AXI read packing state changed without accepting a beat")
 

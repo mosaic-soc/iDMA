@@ -1235,6 +1235,17 @@ ${database[protocol]['legalizer_write_data_path']}
     //--------------------------------------
     // Assertions
     //--------------------------------------
+    // Reservation metadata must describe the same payload as the independently queued
+    // read datapath request. Physical ARSIZE and discarded prefix/tail bytes do not
+    // change the number of entries reserved in the byte-lane FIFOs.
+    `ASSERT(ReadReservationMatchesPayload, r_valid_o |->
+                r_req_o.num_bytes == r_req_o.r_dp_req.num_bytes &&
+                r_req_o.fifo_start_lane == r_req_o.r_dp_req.fifo_start_lane,
+            clk_i, !rst_ni, "Read reservation metadata disagrees with the read datapath request")
+    `ASSERT(SafeReadPayloadFits, r_valid_o && r_req_o.deadlock_free |->
+                r_req_o.num_bytes != '0 && 64'(r_req_o.num_bytes) <= SafeReadByteCapacity,
+            clk_i, !rst_ni, "Safe read burst exceeds the payload capacity reserved by the legalizer")
+
     // transpose tile geometry of the presented request (the engine saturates mode at OffsetWidth)
     logic [31:0] tp_num_elem, tp_tile_bytes;
     always_comb begin : proc_transpose_shape
