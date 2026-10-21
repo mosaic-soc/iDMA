@@ -255,7 +255,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// - `size`: Resolved log2(bytes per beat)
     /// - `burst`: Address progression mode on the selected bus
     /// - `fifo_start_lane`: FIFO lane containing this burst's first payload byte
-    /// - `num_beats`: The number of beats this burst consist of
     /// - `is_single`: Is this transfer just one beat long? `(len == 0)`
     typedef struct packed {
         idma_pkg::protocol_e  dst_protocol;
@@ -265,7 +264,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         axi_pkg::burst_t      burst;
         offset_t              fifo_start_lane;
         offset_t              offset;
-        axi_pkg::len_t        num_beats;
         logic                 is_single;
         idma_pkg::compute_options_t compute;
     } w_dp_req_t;
@@ -642,7 +640,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             burst:        idma_req_i.opt.dst.burst,
             fifo_start_lane:   '0,
             offset:       idma_req_i.dst_addr[OffsetWidth-1:0],
-            num_beats:    len,
             is_single:    len == '0,
             compute:      idma_req_i.opt.compute
         };

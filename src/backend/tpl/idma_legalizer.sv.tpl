@@ -1110,7 +1110,6 @@ ${database[used_write_protocols[0]]['legalizer_write_data_path']}
             burst:        opt_w_q.dst_axi_opt.burst,
             fifo_start_lane:   w_fifo_start_lane,
             offset:       w_addr_offset,
-            num_beats:    'd0,
             is_single:    1'b1,
             compute:      opt_w_q.compute
         };
@@ -1148,7 +1147,6 @@ ${database[protocol]['legalizer_write_data_path']}
                 burst:        opt_w_q.dst_axi_opt.burst,
                 fifo_start_lane:   w_fifo_start_lane,
                 offset:       w_addr_offset,
-                num_beats:    'd0,
                 is_single:    1'b1,
                 compute:      opt_w_q.compute
             };

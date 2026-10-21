@@ -86,7 +86,6 @@ legalizer_write_data_path: |
         burst: opt_w_q.dst_axi_opt.burst,
         fifo_start_lane: w_fifo_start_lane,
         offset: w_addr_offset,
-        num_beats: 'd0,
         is_single: w_num_bytes <= StrbWidth,
         compute: opt_w_q.compute
     };
