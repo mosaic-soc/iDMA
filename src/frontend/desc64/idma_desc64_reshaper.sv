@@ -58,6 +58,11 @@ always_comb begin
         idma_req_o.opt.beo.src_reduce_len = descriptor_i.flags[7];
         idma_req_o.opt.beo.dst_reduce_len = descriptor_i.flags[7];
         idma_req_o.opt.beo.deadlock_free  = descriptor_i.flags[24];
+        // The descriptor format does not yet encode runtime AXI sizes.
+        idma_req_o.opt.beo.src_size_enable = 1'b0;
+        idma_req_o.opt.beo.dst_size_enable = 1'b0;
+        idma_req_o.opt.beo.src_size        = '0;
+        idma_req_o.opt.beo.dst_size        = '0;
 end
 
 endmodule

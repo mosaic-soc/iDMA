@@ -151,13 +151,9 @@ ${database[p]['page_size']}\
     /// Burst Llen type
     typedef logic [  BurstLWidth-1:0] llen_t;
 
-    /// Largest power-of-two beat count that fits completely into a byte-lane FIFO
-    localparam int unsigned BufferMaxLlen =
-        BufferDepth > 1 ? $clog2(BufferDepth + 1) - 1 : 0;
-    /// Clamp to the protocol limit and the width of the runtime maximum-length field.
-    localparam int unsigned SafeReadMaxLlen =
-        BufferMaxLlen < BurstLen ? BufferMaxLlen :
-        BurstLen < 3'd7 ? BurstLen : 3'd7;
+    /// Leave one entry per lane for residual bytes of a split write beat. Reserving the
+    /// entire buffer could otherwise wait for an empty buffer that the write side cannot drain.
+    localparam longint unsigned SafeReadByteCapacity = 64'(BufferDepth - 1) * StrbWidth;
 
 % if has_read_bursting or has_write_bursting:
     % for p in used_protocols:
@@ -217,6 +213,14 @@ ${database[p]['page_size']}\
     // read/write offset, in bytes
     offset_t   r_addr_offset;
     offset_t   w_addr_offset;
+    // A physical bus lane and an offset within the selected AXI beat differ for narrow accesses.
+    offset_t r_beat_mask, w_beat_mask;
+    offset_t r_beat_offset, w_beat_offset;
+    offset_t r_start_lane, w_start_lane;
+    offset_t r_shift, w_shift;
+    offset_t r_tailer, w_tailer;
+    addr_t r_axi_addr, w_axi_addr;
+    axi_pkg::len_t r_num_beats, w_num_beats;
 
     // largest possible burst in bytes
     page_len_t r_burst_num_bytes_cap;
@@ -351,9 +355,10 @@ llen_t'(${used_read_protocols[0].capitalize()}BurstLen);
             r_max_llen = llen_t'(opt_tf_q.src_max_llen);
         end
 
-        // restrict to page size
-        if (r_max_llen > PageAddrWidth - OffsetWidth) begin
-            r_max_llen = llen_t'(PageAddrWidth - OffsetWidth);
+        // Keep the burst byte count within one page so it fits page_len_t.
+        // This also limits FIXED payloads, although their address footprint is only one beat.
+        if (int'(r_max_llen) > PageAddrWidth - int'(opt_tf_q.src_size)) begin
+            r_max_llen = llen_t'(PageAddrWidth - int'(opt_tf_q.src_size));
         end
     end
     % endif
@@ -388,15 +393,27 @@ llen_t'(${read_protocol.capitalize()}BurstLen);
             r_max_llen = llen_t'(opt_tf_q.src_max_llen);
         end
 
-        // restrict to page size
-        if (r_max_llen > PageAddrWidth - OffsetWidth) begin
-            r_max_llen = llen_t'(PageAddrWidth - OffsetWidth);
+        // Keep the burst byte count within one page so it fits page_len_t.
+        // This also limits FIXED payloads, although their address footprint is only one beat.
+        if (int'(r_max_llen) > PageAddrWidth - int'(opt_tf_q.src_size)) begin
+            r_max_llen = llen_t'(PageAddrWidth - int'(opt_tf_q.src_size));
         end
     end
 % endif
 
     assign r_addr_offset = r_tf_q.addr[OffsetWidth-1:0];
-    assign r_burst_num_bytes_cap = page_len_t'(1 << (r_max_llen + OffsetWidth)) - page_len_t'(r_addr_offset);
+    assign r_beat_mask = offset_t'((page_len_t'(1) << opt_tf_q.src_size) - 1'b1);
+    assign r_beat_offset = r_addr_offset & r_beat_mask;
+    always_comb begin : gen_r_burst_num_bytes_cap
+        r_burst_num_bytes_cap = page_len_t'(1) <<
+                               (int'(r_max_llen) + int'(opt_tf_q.src_size));
+        // Clamp in bytes rather than storing a bus-width-specific maximum beat count.
+        // Subtract the first-beat prefix afterwards so intermediate bursts end on a beat boundary.
+        if (opt_tf_q.deadlock_free && 64'(r_burst_num_bytes_cap) > SafeReadByteCapacity) begin
+            r_burst_num_bytes_cap = page_len_t'(SafeReadByteCapacity);
+        end
+        r_burst_num_bytes_cap = r_burst_num_bytes_cap - page_len_t'(r_beat_offset);
+    end
 
 % if has_page_read_bursting:
     % if one_read_port:
@@ -533,9 +550,10 @@ llen_t'(${used_write_protocols[0].capitalize()}BurstLen);
             w_max_llen = llen_t'(opt_w_q.dst_max_llen);
         end
 
-        // restrict to page size
-        if (w_max_llen > PageAddrWidth - OffsetWidth) begin
-            w_max_llen = llen_t'(PageAddrWidth - OffsetWidth);
+        // Keep the burst byte count within one page so it fits page_len_t.
+        // This also limits FIXED payloads, although their address footprint is only one beat.
+        if (int'(w_max_llen) > PageAddrWidth - int'(opt_w_q.dst_size)) begin
+            w_max_llen = llen_t'(PageAddrWidth - int'(opt_w_q.dst_size));
         end
     end
     % endif
@@ -570,15 +588,19 @@ llen_t'(${write_protocol.capitalize()}BurstLen);
             w_max_llen = llen_t'(opt_w_q.dst_max_llen);
         end
 
-        // restrict to page size
-        if (w_max_llen > PageAddrWidth - OffsetWidth) begin
-            w_max_llen = llen_t'(PageAddrWidth - OffsetWidth);
+        // Keep the burst byte count within one page so it fits page_len_t.
+        // This also limits FIXED payloads, although their address footprint is only one beat.
+        if (int'(w_max_llen) > PageAddrWidth - int'(opt_w_q.dst_size)) begin
+            w_max_llen = llen_t'(PageAddrWidth - int'(opt_w_q.dst_size));
         end
     end
 % endif
 
     assign w_addr_offset = w_tf_q.addr[OffsetWidth-1:0];
-    assign w_burst_num_bytes_cap = page_len_t'(1 << (w_max_llen + OffsetWidth)) - page_len_t'(w_addr_offset);
+    assign w_beat_mask = offset_t'((page_len_t'(1) << opt_w_q.dst_size) - 1'b1);
+    assign w_beat_offset = w_addr_offset & w_beat_mask;
+    assign w_burst_num_bytes_cap = (page_len_t'(1) <<
+        (int'(w_max_llen) + int'(opt_w_q.dst_size))) - page_len_t'(w_beat_offset);
 
 % if has_page_write_bursting:
     % if one_write_port:
@@ -786,21 +808,20 @@ w_tf_q.length[PageAddrWidth:0] ),
             dst_head:       req.opt.dst_head,
             read_shift:     '0,
             write_shift:    '0,
+            // Disabled controls retain the physical bus size, including for non-AXI ports.
+            src_size:       req.opt.beo.src_size_enable
+                                ? req.opt.beo.src_size : axi_pkg::size_t'(OffsetWidth),
+            dst_size:       req.opt.beo.dst_size_enable
+                                ? req.opt.beo.dst_size : axi_pkg::size_t'(OffsetWidth),
 % if compute_eligible:
             decouple_aw:    req.opt.beo.decouple_aw |
                             (EnableCompute & req.opt.compute.enable),
 % else:
             decouple_aw:    req.opt.beo.decouple_aw,
 % endif
-            src_max_llen:   req.opt.beo.deadlock_free
-                                ? ((req.opt.beo.src_reduce_len &&
-                                    (req.opt.beo.src_max_llen < SafeReadMaxLlen))
-                                       ? req.opt.beo.src_max_llen
-                                       : 3'(SafeReadMaxLlen))
-                                : req.opt.beo.src_max_llen,
+            src_max_llen:   req.opt.beo.src_max_llen,
             dst_max_llen:   req.opt.beo.dst_max_llen,
-            src_reduce_len: req.opt.beo.src_reduce_len |
-                            req.opt.beo.deadlock_free,
+            src_reduce_len: req.opt.beo.src_reduce_len,
             dst_reduce_len: req.opt.beo.dst_reduce_len,
             deadlock_free:  req.opt.beo.deadlock_free,
             axi_id:         req.opt.axi_id,
@@ -843,7 +864,7 @@ w_tf_q.length[PageAddrWidth:0] ),
     end
 % endif
 
-    // legalization process -> read and write is coupled together
+    // Calculate the next independent read/write bursts; state advances only on each grant.
     always_comb begin : proc_read_write_transaction
 
         // default: keep state
@@ -875,6 +896,12 @@ w_tf_q.length[PageAddrWidth:0] ),
             r_done = 1'b1;
         end
 
+        // Advance the FIFO byte index across split bursts, even for FIXED addresses.
+        // Truncation wraps modulo StrbWidth; r_tf_ena commits it when this burst is accepted.
+        if (r_tf_q.valid) begin
+            r_tf_d.stream_lane = r_tf_q.stream_lane + OffsetWidth'(r_num_bytes);
+        end
+
         //--------------------------------------
         // Legalize write transaction
         //--------------------------------------
@@ -892,6 +919,12 @@ w_tf_q.length[PageAddrWidth:0] ),
             // finished
             w_tf_d.valid = 1'b0;
             w_done = 1'b1;
+        end
+
+        // Write bursts advance their FIFO index independently of the read burst boundaries.
+        // Truncation wraps modulo StrbWidth; w_tf_ena commits it when this burst is accepted.
+        if (w_tf_q.valid) begin
+            w_tf_d.stream_lane = w_tf_q.stream_lane + OffsetWidth'(w_num_bytes);
         end
 
 % if compute_eligible:
@@ -993,6 +1026,50 @@ w_tf_q.length[PageAddrWidth:0] ),
     // Connect outputs
     //--------------------------------------
 
+    // Preserve the legacy compute/combined-shifter mapping. Plain copies use an address-
+    // independent FIFO index, which also advances when FIXED bursts retain the same address.
+    always_comb begin : gen_stream_mapping
+        r_start_lane = r_tf_q.stream_lane;
+        w_start_lane = w_tf_q.stream_lane;
+        if (CombinedShifter) begin
+            r_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
+            w_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
+        end
+% if compute_eligible:
+        if (EnableCompute && opt_tf_q.compute.enable) begin
+            r_start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
+        end
+        if (EnableCompute && opt_w_q.compute.enable) begin
+            w_start_lane = OffsetWidth'(w_addr_offset + opt_w_q.write_shift);
+        end
+% endif
+    end
+    assign r_shift = r_addr_offset - r_start_lane;
+    assign w_shift = w_start_lane - w_addr_offset;
+
+    // AxADDR retains the selected narrow lane instead of rounding down to a full bus word.
+    // All divisions/modulo by the runtime power-of-two size use shifts and masks.
+    assign r_axi_addr = r_tf_q.addr & ~addr_t'(r_beat_mask);
+    assign w_axi_addr = w_tf_q.addr & ~addr_t'(w_beat_mask);
+    assign r_num_beats = axi_pkg::len_t'(
+        (r_num_bytes + page_len_t'(r_beat_offset) - page_len_t'(1)) >> opt_tf_q.src_size);
+    assign w_num_beats = axi_pkg::len_t'(
+        (w_num_bytes + page_len_t'(w_beat_offset) - page_len_t'(1)) >> opt_w_q.dst_size);
+
+    always_comb begin : gen_tailers
+        r_tailer = OffsetWidth'(r_num_bytes + page_len_t'(r_addr_offset));
+        w_tailer = OffsetWidth'(w_num_bytes + page_len_t'(w_addr_offset));
+        // FIXED repeats its physical lane window. Only the final beat may be partial.
+        if (r_fixed_burst) begin
+            r_tailer = r_addr_offset +
+                (OffsetWidth'(r_num_bytes - page_len_t'(1)) & r_beat_mask) + 1'b1;
+        end
+        if (w_fixed_burst) begin
+            w_tailer = w_addr_offset +
+                (OffsetWidth'(w_num_bytes - page_len_t'(1)) & w_beat_mask) + 1'b1;
+        end
+    end
+
     // Read meta channel
 % if one_read_port:
     always_comb begin
@@ -1017,21 +1094,25 @@ ${database[protocol]['legalizer_read_meta_channel']}
     assign r_req_o.r_dp_req = '{
         src_protocol: opt_tf_q.src_protocol,
         src_head:     opt_tf_q.src_head,
+        num_bytes:    r_num_bytes,
+        size:         opt_tf_q.src_size,
+        burst:        opt_tf_q.src_axi_opt.burst,
+        start_lane:   r_req_o.start_lane,
         offset:       r_addr_offset,
-        tailer:       OffsetWidth'(r_num_bytes + r_addr_offset),
-        shift:        opt_tf_q.read_shift,
+        tailer:       r_tailer,
+        shift:        r_shift,
         decouple_aw:  opt_tf_q.decouple_aw,
 % if compute_eligible:
-        is_single:    r_num_bytes <= StrbWidth,
+        is_single:    r_num_beats == '0,
         mx:           EnableCompute ? idma_pkg::mx_tag(ComputeOps, opt_tf_q.compute,
                                                        mx_r_q.on & mx_r_q.scl,
                                                        mx_r_q.half & r_done, r_done) : '0
 % else:
-        is_single:    r_num_bytes <= StrbWidth
+        is_single:    r_num_beats == '0
 % endif
     };
     assign r_req_o.num_bytes = r_num_bytes;
-    assign r_req_o.start_lane = OffsetWidth'(r_addr_offset - opt_tf_q.read_shift);
+    assign r_req_o.start_lane = r_start_lane;
     assign r_req_o.deadlock_free = opt_tf_q.deadlock_free;
 
     // Write meta channel and data path
@@ -1045,9 +1126,12 @@ ${database[used_write_protocols[0]]['legalizer_write_data_path']}
             dst_protocol: opt_w_q.dst_protocol,
             dst_head:     opt_w_q.dst_head,
             num_bytes:    w_num_bytes,
+            size:         opt_w_q.dst_size,
+            burst:        opt_w_q.dst_axi_opt.burst,
+            start_lane:   w_start_lane,
             offset:       w_addr_offset,
-            tailer:       OffsetWidth'(w_num_bytes + w_addr_offset),
-            shift:        opt_w_q.write_shift,
+            tailer:       w_tailer,
+            shift:        w_shift,
             num_beats:    'd0,
             is_single:    1'b1,
             compute:      opt_w_q.compute
@@ -1082,9 +1166,12 @@ ${database[protocol]['legalizer_write_data_path']}
                 dst_protocol: opt_w_q.dst_protocol,
                 dst_head:     opt_w_q.dst_head,
                 num_bytes:    w_num_bytes,
+                size:         opt_w_q.dst_size,
+                burst:        opt_w_q.dst_axi_opt.burst,
+                start_lane:   w_start_lane,
                 offset:       w_addr_offset,
-                tailer:       OffsetWidth'(w_num_bytes + w_addr_offset),
-                shift:        opt_w_q.write_shift,
+                tailer:       w_tailer,
+                shift:        w_shift,
                 num_beats:    'd0,
                 is_single:    1'b1,
                 compute:      opt_w_q.compute

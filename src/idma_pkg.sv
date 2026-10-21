@@ -74,13 +74,19 @@ package idma_pkg;
     /// - `deadlock_free`: reserve data-buffer space before issuing each read request
     /// - `*_max_llen`: the maximum log length of a burst
     /// - `*_reduce_len`: should bursts be reduced in length?
+    /// - `*_size_enable`: use the corresponding runtime AXI size instead of the bus width
+    /// - `*_size`: log2(bytes per AXI beat), ignored when the corresponding enable is zero
     typedef struct packed {
-        logic       decouple_aw;
-        logic [2:0] src_max_llen;
-        logic [2:0] dst_max_llen;
-        logic       src_reduce_len;
-        logic       dst_reduce_len;
-        logic       deadlock_free;
+        logic           decouple_aw;
+        logic [2:0]     src_max_llen;
+        logic [2:0]     dst_max_llen;
+        logic           src_reduce_len;
+        logic           dst_reduce_len;
+        logic           deadlock_free;
+        logic           src_size_enable;
+        logic           dst_size_enable;
+        axi_pkg::size_t src_size;
+        axi_pkg::size_t dst_size;
     } backend_options_t;
 
     /// MX block geometry (OCP MX): 32 elements per block, width-independent

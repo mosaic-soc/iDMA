@@ -58,12 +58,27 @@ addrmap idma_reg #(
         field {
             desc = "Reserve data-buffer space before issuing read requests";
         } deadlock_free [2*NumProtBits+11+Log2NumDims:2*NumProtBits+11+Log2NumDims] = 0;
+
+        // Fixed positions keep size controls independent of the frontend variant.
+        // RDL elaboration rejects dimension/protocol fields overlapping these controls.
         field {
             desc = "Source burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint.";
         } src_fixed [22:22] = 0;
         field {
             desc = "Destination burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint.";
         } dst_fixed [23:23] = 0;
+        field {
+            desc = "Use src_size for AXI reads; when clear, use the physical bus width";
+        } src_size_enable [24:24] = 0;
+        field {
+            desc = "Use dst_size for AXI writes; when clear, use the physical bus width";
+        } dst_size_enable [25:25] = 0;
+        field {
+            desc = "AXI read size as log2(bytes per beat), 0 through 7; must not exceed the physical bus width. Ignored when src_size_enable is clear. Length remains a payload byte count; excess bytes from the final read are discarded.";
+        } src_size [28:26] = 0;
+        field {
+            desc = "AXI write size as log2(bytes per beat), 0 through 7; must not exceed the physical bus width. Ignored when dst_size_enable is clear. Length remains a payload byte count; the final write uses partial strobes when needed.";
+        } dst_size [31:29] = 0;
     };
 
     reg status {

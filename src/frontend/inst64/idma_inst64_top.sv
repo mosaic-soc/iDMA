@@ -630,6 +630,11 @@ module idma_inst64_top #(
         idma_fe_req_d.burst_req.opt.beo.src_reduce_len = 1'b0;
         idma_fe_req_d.burst_req.opt.beo.dst_reduce_len = 1'b0;
         idma_fe_req_d.burst_req.opt.beo.deadlock_free  = 1'b0;
+        // No runtime size controls in the inst64 instruction encoding.
+        idma_fe_req_d.burst_req.opt.beo.src_size_enable = 1'b0;
+        idma_fe_req_d.burst_req.opt.beo.dst_size_enable = 1'b0;
+        idma_fe_req_d.burst_req.opt.beo.src_size        = '0;
+        idma_fe_req_d.burst_req.opt.beo.dst_size        = '0;
         idma_fe_req_d.burst_req.opt.last               = 1'b0;
         idma_fe_req_d.burst_req.opt.compute            = idma_fe_compute_q;
 

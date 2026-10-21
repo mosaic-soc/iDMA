@@ -7,6 +7,7 @@
 // - Tobias Senti <tsenti@ethz.ch>
 
 `include "common_cells/registers.svh"
+`include "common_cells/assertions.svh"
 
 /// Implementing the AXI4 read task in the iDMA transport layer.
 module idma_axi_read #(
@@ -17,6 +18,10 @@ module idma_axi_read #(
     parameter type byte_t = logic,
     /// Offset type
     parameter type strb_t = logic,
+    /// Byte-lane index type
+    parameter type offset_t = logic,
+    /// Payload byte-count type
+    parameter type tf_len_t = logic,
 
     /// AXI 4 Request channel type
     parameter type read_req_t = logic,
@@ -61,46 +66,35 @@ module idma_axi_read #(
     /// AXI4+ATOP read manager port response
     input  read_rsp_t read_rsp_i,
 
-    /// Data to Buffer
+    /// Raw read data; the transport layer applies buffer_shift_o
     output byte_t [StrbWidth-1:0] buffer_in_o,
-    /// Valid to Buffer
+    /// Current byte rotation, shared by the data and valid-mask shifters
+    output offset_t buffer_shift_o,
+    /// Valid mask in FIFO-lane coordinates, after rotation
     output strb_t buffer_in_valid_o,
     /// A response beat the read side can take, before the buffer masks and readiness
     output logic buffer_in_beat_o,
     /// Ready from Buffer
     input  strb_t buffer_in_ready_i
 );
-    // offsets needed for masks to empty buffer
-    strb_t r_first_mask;
-    strb_t r_last_mask;
-
-    // read aligned in mask. needs to be shifted together with the data before
-    // it can be used to mask valid data flowing into the buffer
+    // Physical AXI lanes carrying payload in the current beat, before FIFO alignment.
     strb_t read_aligned_in_mask;
 
-    // hold one bit state: it this the first read?
+    // On the first beat, use the queued request directly to avoid a setup cycle.
     logic first_r_d, first_r_q;
+    offset_t bus_lane_d, bus_lane_q, bus_lane;
+    offset_t fifo_lane_d, fifo_lane_q, fifo_lane;
+    tf_len_t bytes_left_d, bytes_left_q, bytes_left;
+    // One extra bit represents a full bus word, which does not fit in an index.
+    typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
+    beat_bytes_t beat_bytes, beat_offset, available_bytes, payload_bytes;
 
-    // in mask is write aligned: it is the result of the read aligned in mask
-    // that is shifted together with the data in the barrel shifter
+    // FIFO lane mask, rotated identically to the data in the transport layer.
     strb_t mask_in;
 
     // inbound control signals to the read buffer: controlled by the read process
     logic  in_valid;
     logic  in_ready;
-
-    //--------------------------------------
-    // Mask pre-calculation
-    //--------------------------------------
-    // in contiguous transfers that are unaligned, there will be some
-    // invalid bytes at the beginning and the end of the stream
-    // example: 25B in 64 bit system
-    //  iiiivvvv|vvvvvvvv|vvvvvvvv|vvvvviii
-    // first msk|----full mask----|last msk
-
-    // read align masks
-    assign r_first_mask = '1 << r_dp_req_i.offset;
-    assign r_last_mask  = '1 >> (StrbWidth - r_dp_req_i.tailer);
 
     //--------------------------------------
     // Read meta channel
@@ -114,17 +108,21 @@ module idma_axi_read #(
     //--------------------------------------
     // In mask generation
     //--------------------------------------
-    // in the case of unaligned reads -> not all data is valid
+    assign bus_lane   = first_r_q ? r_dp_req_i.offset     : bus_lane_q;
+    assign fifo_lane  = first_r_q ? r_dp_req_i.start_lane : fifo_lane_q;
+    assign bytes_left = first_r_q ? r_dp_req_i.num_bytes  : bytes_left_q;
+    assign beat_bytes = beat_bytes_t'(1) << r_dp_req_i.size;
+    assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
+    assign available_bytes = beat_bytes - beat_offset;
+    assign payload_bytes = bytes_left < tf_len_t'(available_bytes)
+        ? beat_bytes_t'(bytes_left) : available_bytes;
+
+    // Each beat uses only its size-selected AXI lanes. The first beat can have a
+    // prefix and the final beat excess bytes; neither belongs to the FIFO stream.
     always_comb begin : proc_in_mask_generator
-        // default case: all ones
-        read_aligned_in_mask = '1;
-        // is first word: some bytes at the beginning may be invalid
-        read_aligned_in_mask = first_r_q ?
-            read_aligned_in_mask & r_first_mask : read_aligned_in_mask;
-        // is last word in write burst: some bytes at the end may be invalid
-        if (r_dp_req_i.tailer != '0) begin
-            read_aligned_in_mask = read_rsp_i.r.last ?
-                read_aligned_in_mask & r_last_mask : read_aligned_in_mask;
+        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
+            read_aligned_in_mask[lane] = lane >= int'(bus_lane) &&
+                                        lane < int'(bus_lane) + int'(payload_bytes);
         end
     end
 
@@ -132,44 +130,42 @@ module idma_axi_read #(
     //--------------------------------------
     // Barrel shifter
     //--------------------------------------
-    // data arrives in chunks of length DATA_WDITH, the buffer will be filled with
-    // the realigned data. StrbWidth bytes will be inserted starting from the
-    // provided address, overflows will naturally wrap
-
-    // a barrel shifter is a concatenation of the same array with twice and a normal
-    // shift. Optimized for Synopsys DesignWare.
+    // The transport layer rotates the raw data with this same shift. FIXED beats
+    // repeat their bus lanes while their payload advances through the FIFO lanes.
     assign buffer_in_o = read_rsp_i.r.data;
-    assign mask_in     = strb_t'({read_aligned_in_mask, read_aligned_in_mask} >> r_dp_req_i.shift);
+    assign buffer_shift_o = bus_lane - fifo_lane;
+    assign mask_in = strb_t'({read_aligned_in_mask, read_aligned_in_mask} >> buffer_shift_o);
 
 
     //--------------------------------------
     // Read control
     //--------------------------------------
-    // controls the next state of the read flag
-    always_comb begin : proc_first_read
-        // sticky is first bit for read
-        if (!read_rsp_i.r.last & read_rsp_i.r_valid & read_req_o.r_ready) begin
-            // new transfer has started
-            first_r_d = 1'b0;
-        end else if (read_rsp_i.r.last & read_rsp_i.r_valid & read_req_o.r_ready) begin
-            // finish read burst
-            first_r_d = 1'b1;
-        end else begin
-            // no change
-            first_r_d = first_r_q;
+    always_comb begin : proc_read_state
+        first_r_d = first_r_q;
+        bus_lane_d = bus_lane_q;
+        fifo_lane_d = fifo_lane_q;
+        bytes_left_d = bytes_left_q;
+        if (read_rsp_i.r_valid && read_req_o.r_ready) begin
+            first_r_d = read_rsp_i.r.last;
+            bus_lane_d = bus_lane;
+            if (r_dp_req_i.burst == axi_pkg::BURST_INCR) begin
+                bus_lane_d = bus_lane + offset_t'(available_bytes);
+            end
+            fifo_lane_d = fifo_lane + offset_t'(payload_bytes);
+            bytes_left_d = bytes_left - tf_len_t'(payload_bytes);
         end
     end
 
     // the buffer can be pushed to if all the masked FIFO buffers (mask_in) are ready.
     assign in_ready = &(buffer_in_ready_i | ~mask_in);
     // the read can accept data if the buffer is ready and the response channel is ready
-    assign read_req_o.r_ready = in_ready & r_dp_ready_i;
+    assign read_req_o.r_ready = r_dp_valid_i & in_ready & r_dp_ready_i;
 
     // once valid data is applied, it can be pushed in all the selected (mask_in) buffers
     // be sure the response channel is ready
-    assign in_valid          = read_rsp_i.r_valid & in_ready & r_dp_ready_i;
+    assign in_valid          = read_rsp_i.r_valid & read_req_o.r_ready;
     assign buffer_in_valid_o = in_valid ? mask_in : '0;
-    assign buffer_in_beat_o  = read_rsp_i.r_valid & r_dp_ready_i;
+    assign buffer_in_beat_o  = r_dp_valid_i & read_rsp_i.r_valid & r_dp_ready_i;
 
     // r_dp_ready_o is triggered by the last element arriving from the read
     assign r_dp_ready_o = r_dp_valid_i & r_dp_ready_i &
@@ -181,7 +177,7 @@ module idma_axi_read #(
     assign r_dp_rsp_o.first = first_r_q;
 
     // r_dp_valid_o is triggered once the last element is here or an error occurs
-    assign r_dp_valid_o = read_rsp_i.r_valid & in_ready & (read_rsp_i.r.last
+    assign r_dp_valid_o = r_dp_valid_i & read_rsp_i.r_valid & in_ready & (read_rsp_i.r.last
         | (|read_rsp_i.r.resp));
 
     //--------------------------------------
@@ -198,5 +194,20 @@ module idma_axi_read #(
     // State
     //--------------------------------------
     `FF(first_r_q,     first_r_d,     '1, clk_i, rst_ni)
+    `FF(bus_lane_q,    bus_lane_d,    '0, clk_i, rst_ni)
+    `FF(fifo_lane_q,   fifo_lane_d,   '0, clk_i, rst_ni)
+    `FF(bytes_left_q,  bytes_left_d,  '0, clk_i, rst_ni)
+
+    `ASSERT(ReadSizeFits, r_dp_valid_i |-> int'(r_dp_req_i.size) <= $clog2(StrbWidth),
+            clk_i, !rst_ni, "AXI read size must not exceed the physical bus width")
+    `ASSERT(ReadPayloadNonzero, read_rsp_i.r_valid && read_req_o.r_ready |-> payload_bytes != '0,
+            clk_i, !rst_ni, "Accepted AXI read beats must contain payload bytes")
+    `ASSERT(ReadLastMatchesLength, read_rsp_i.r_valid && read_req_o.r_ready |->
+                read_rsp_i.r.last == (bytes_left == tf_len_t'(payload_bytes)),
+            clk_i, !rst_ni, "AXI RLAST must coincide with the final payload byte")
+    `ASSERT(ReadStateStableWhenStalled,
+            read_rsp_i.r_valid && !read_req_o.r_ready |=>
+                $stable({first_r_q, bus_lane_q, fifo_lane_q, bytes_left_q}),
+            clk_i, !rst_ni, "AXI read packing state changed without accepting a beat")
 
 endmodule

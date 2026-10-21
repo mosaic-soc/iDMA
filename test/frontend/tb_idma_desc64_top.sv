@@ -103,7 +103,9 @@ module tb_idma_desc64_top
         constraint unsupported_beo_zero_c {
             burst.opt.beo.decouple_aw   == '0 && burst.opt.beo.src_max_llen == '0 &&
             burst.opt.beo.dst_max_llen == '0 && burst.opt.last           == '0 &&
-            burst.opt.beo.deadlock_free == '0;
+            burst.opt.beo.deadlock_free == '0 &&
+            burst.opt.beo.src_size_enable == '0 && burst.opt.beo.dst_size_enable == '0 &&
+            burst.opt.beo.src_size == '0 && burst.opt.beo.dst_size == '0;
         }
         constraint axi_params_zero_src_c {
             burst.opt.src.lock == '0 && burst.opt.src.prot   == '0 &&

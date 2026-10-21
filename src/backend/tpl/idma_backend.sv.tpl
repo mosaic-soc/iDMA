@@ -214,6 +214,10 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// The datapath read request type holds all the information required to configure the read
     /// part of the datapath. The type consists of:
     /// - `offset`: The bus offset of the read
+    /// - `num_bytes`: Payload bytes in this burst, excluding discarded read bytes
+    /// - `size`: Resolved log2(bytes per beat)
+    /// - `burst`: Address progression mode on the selected bus
+    /// - `start_lane`: FIFO lane receiving this burst's first payload byte
     /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
     ///              bus width.
     /// - `shift`: The amount the data needs to be shifted
@@ -225,6 +229,10 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     typedef struct packed {
         idma_pkg::protocol_e  src_protocol;
         idma_pkg::multihead_t src_head;  // ignored unless multi-head (one head: tied 0)
+        tf_len_t              num_bytes;
+        axi_pkg::size_t       size;
+        axi_pkg::burst_t      burst;
+        offset_t              start_lane;
         offset_t              offset;
         offset_t              tailer;
         offset_t              shift;
@@ -249,6 +257,9 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// part of the datapath. The type consists of:
     /// - `num_bytes`: The number of useful bytes in this legalized write request
     /// - `offset`: The bus offset of the write
+    /// - `size`: Resolved log2(bytes per beat)
+    /// - `burst`: Address progression mode on the selected bus
+    /// - `start_lane`: FIFO lane containing this burst's first payload byte
     /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
     ///              bus width.
     /// - `shift`: The amount the data needs to be shifted
@@ -258,6 +269,9 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         idma_pkg::protocol_e  dst_protocol;
         idma_pkg::multihead_t dst_head;  // ignored unless multi-head (one head: tied 0)
         tf_len_t              num_bytes;
+        axi_pkg::size_t       size;
+        axi_pkg::burst_t      burst;
+        offset_t              start_lane;
         offset_t              offset;
         offset_t              tailer;
         offset_t              shift;
@@ -326,6 +340,9 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         idma_pkg::multihead_t   dst_head;
         offset_t                read_shift;
         offset_t                write_shift;
+        // Resolved sizes are latched independently with the read/write options.
+        axi_pkg::size_t         src_size;
+        axi_pkg::size_t         dst_size;
         logic                   decouple_aw;
         logic [2:0]             src_max_llen;
         logic [2:0]             dst_max_llen;
@@ -344,6 +361,8 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     typedef struct packed {
         tf_len_t length;
         addr_t   addr;
+        // Position in the logical FIFO byte stream, independent of the bus address.
+        offset_t stream_lane;
         logic    valid;
         addr_t   base_addr;
         user_t   user;
@@ -604,6 +623,10 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         assign r_req.r_dp_req = '{
             src_protocol: idma_req_i.opt.src_protocol,
             src_head:     idma_req_i.opt.src_head,
+            num_bytes:    idma_req_i.length,
+            size:         axi_pkg::size_t'(OffsetWidth),
+            burst:        idma_req_i.opt.src.burst,
+            start_lane:   '0,
             offset:       idma_req_i.src_addr[OffsetWidth-1:0],
             tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.src_addr[OffsetWidth-1:0]),
             shift:        OffsetWidth'(idma_req_i.src_addr[OffsetWidth-1:0]),
@@ -629,6 +652,9 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             dst_protocol: idma_req_i.opt.dst_protocol,
             dst_head:     idma_req_i.opt.dst_head,
             num_bytes:    idma_req_i.length,
+            size:         axi_pkg::size_t'(OffsetWidth),
+            burst:        idma_req_i.opt.dst.burst,
+            start_lane:   '0,
             offset:       idma_req_i.dst_addr[OffsetWidth-1:0],
             tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.dst_addr[OffsetWidth-1:0]),
             shift:        OffsetWidth'(- idma_req_i.dst_addr[OffsetWidth-1:0]),
@@ -1116,6 +1142,36 @@ w_req.decouple_aw || (w_req.w_dp_req.dst_protocol inside {\
     //--------------------------------------
     // Assertions
     //--------------------------------------
+    `ASSERT(SourceSizeValid,
+            req_valid_i && req_ready_o && idma_req_i.opt.beo.src_size_enable |->
+                int'(idma_req_i.opt.beo.src_size) <= OffsetWidth &&
+                idma_req_i.opt.src_protocol == idma_pkg::AXI,
+            clk_i, !rst_ni, "Runtime source size must fit the bus and requires AXI")
+    `ASSERT(DestinationSizeValid,
+            req_valid_i && req_ready_o && idma_req_i.opt.beo.dst_size_enable |->
+                int'(idma_req_i.opt.beo.dst_size) <= OffsetWidth &&
+                idma_req_i.opt.dst_protocol == idma_pkg::AXI,
+            clk_i, !rst_ni, "Runtime destination size must fit the bus and requires AXI")
+    `ASSERT(RuntimeSizeConfigurationSupported,
+            req_valid_i && req_ready_o &&
+                (idma_req_i.opt.beo.src_size_enable || idma_req_i.opt.beo.dst_size_enable) |->
+                HardwareLegalizer && !CombinedShifter && !idma_req_i.opt.compute.enable,
+            clk_i, !rst_ni,
+            "Runtime AXI sizes require the hardware legalizer, separate shifters and no compute")
+    `ASSERT(SourceFixedSizeAligned,
+            req_valid_i && req_ready_o && idma_req_i.opt.src_protocol == idma_pkg::AXI &&
+                idma_req_i.opt.src.burst == axi_pkg::BURST_FIXED |->
+                (idma_req_i.src_addr & ((addr_t'(1) <<
+                    (idma_req_i.opt.beo.src_size_enable ? int'(idma_req_i.opt.beo.src_size)
+                                                       : OffsetWidth)) - addr_t'(1))) == '0,
+            clk_i, !rst_ni, "FIXED source address must be aligned to its AXI beat size")
+    `ASSERT(DestinationFixedSizeAligned,
+            req_valid_i && req_ready_o && idma_req_i.opt.dst_protocol == idma_pkg::AXI &&
+                idma_req_i.opt.dst.burst == axi_pkg::BURST_FIXED |->
+                (idma_req_i.dst_addr & ((addr_t'(1) <<
+                    (idma_req_i.opt.beo.dst_size_enable ? int'(idma_req_i.opt.beo.dst_size)
+                                                       : OffsetWidth)) - addr_t'(1))) == '0,
+            clk_i, !rst_ni, "FIXED destination address must be aligned to its AXI beat size")
     `IDMA_NONSYNTH_BLOCK(
     initial begin : proc_assert_params
         axi_addr_width : assert(AddrWidth >= 32'd12) else

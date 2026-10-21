@@ -215,12 +215,20 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
 % endif
     strb_t buffer_in_valid;
     strb_t buffer_in_ready;
+    offset_t buffer_in_shift;
+% if not one_read_port and 'axi' in used_read_protocols:
+    offset_t ${mh_format['ar']['axi']}axi_buffer_in_shift;
+% endif
     // a read beat before the buffer masks
     logic  buffer_in_beat;
 
     // outbound control signals of the buffer: controlled by the write process
     strb_t buffer_out_valid;
     strb_t buffer_out_valid_shifted;
+    offset_t buffer_out_shift;
+% if not one_write_port and 'axi' in used_write_protocols:
+    offset_t ${mh_format['aw']['axi']}axi_buffer_out_shift;
+% endif
 % if not one_write_port:
     % for p in used_write_protocols:
     strb_t ${mh_format['aw'][p]}${p}_buffer_out_ready;
@@ -361,6 +369,11 @@ ${rendered_read_ports[read_port]}
                 r_dp_valid_o    = ${rp}_r_dp_valid;
 
                 buffer_in       = ${rp}_buffer_in;
+    % if rp == 'axi':
+                buffer_in_shift = ${rp}_buffer_in_shift;
+    % else:
+                buffer_in_shift = r_dp_req_i.shift;
+    % endif
                 buffer_in_valid = ${rp}_buffer_in_valid;
                 buffer_in_beat  = ${rp}_buffer_in_beat;
             end
@@ -371,6 +384,11 @@ ${rendered_read_ports[read_port]}
                 r_dp_valid_o    = ${rp}_r_dp_valid [r_dp_req_i.src_head];
 
                 buffer_in       = ${rp}_buffer_in [r_dp_req_i.src_head];
+    % if rp == 'axi':
+                buffer_in_shift = ${rp}_buffer_in_shift [r_dp_req_i.src_head];
+    % else:
+                buffer_in_shift = r_dp_req_i.shift;
+    % endif
                 buffer_in_valid = ${rp}_buffer_in_valid [r_dp_req_i.src_head];
                 buffer_in_beat  = ${rp}_buffer_in_beat [r_dp_req_i.src_head];
             end
@@ -382,6 +400,7 @@ ${rendered_read_ports[read_port]}
                 r_dp_valid_o    = 1'b0;
 
                 buffer_in       = '0;
+                buffer_in_shift = '0;
                 buffer_in_valid = '0;
                 buffer_in_beat  = 1'b0;
             end
@@ -392,17 +411,21 @@ ${rendered_read_ports[read_port]}
             r_dp_valid_o    = 1'b0;
 
             buffer_in       = '0;
+            buffer_in_shift = '0;
             buffer_in_valid = '0;
             buffer_in_beat  = 1'b0;
         end
     end
 
 % endif
+% if one_read_port and 'axi' not in used_read_protocols:
+    assign buffer_in_shift = r_dp_req_i.shift;
+% endif
     //--------------------------------------
     // Read Barrel shifter
     //--------------------------------------
 
-    assign buffer_in_tmp = {buffer_in, buffer_in} >> (r_dp_req_i.shift * 8);
+    assign buffer_in_tmp = {buffer_in, buffer_in} >> (buffer_in_shift * 8);
     assign buffer_in_shifted = buffer_in_tmp[$bits(buffer_in_shifted)/8-1:0];
 
     //--------------------------------------
@@ -600,15 +623,19 @@ ${rendered_read_ports[read_port]}
     // Write Barrel shifter
     //--------------------------------------
 
-    assign buffer_out_tmp           = {wr_data, wr_data} >> (w_dp_req_i.shift*8);
+% if one_write_port and used_write_protocols[0] != 'axi':
+    assign buffer_out_shift = w_dp_req_i.shift;
+% endif
+    assign buffer_out_tmp           = {wr_data, wr_data} >> (buffer_out_shift*8);
     assign wr_beat                  = buffer_out_tmp[$bits(wr_beat)/8-1:0];
-    assign wr_beat_valid            = strb_t'({wr_valid, wr_valid} >>   w_dp_req_i.shift);
-    assign wr_beat_mask             = strb_t'({wr_strb, wr_strb} >>   w_dp_req_i.shift);
-    assign buffer_out_ready_shifted = strb_t'({buffer_out_ready, buffer_out_ready} >> - w_dp_req_i.shift);
+    assign wr_beat_valid            = strb_t'({wr_valid, wr_valid} >> buffer_out_shift);
+    assign wr_beat_mask             = strb_t'({wr_strb, wr_strb} >> buffer_out_shift);
+    assign buffer_out_ready_shifted = strb_t'({buffer_out_ready, buffer_out_ready} >>
+                                            offset_t'(-buffer_out_shift));
     assign buffer_out_offer_shifted =
-        strb_t'({buffer_out_offer, buffer_out_offer} >> - w_dp_req_i.shift);
+        strb_t'({buffer_out_offer, buffer_out_offer} >> offset_t'(-buffer_out_shift));
     assign buffer_out_consumed_shifted =
-        strb_t'({buffer_out_consumed, buffer_out_consumed} >> -w_dp_req_i.shift);
+        strb_t'({buffer_out_consumed, buffer_out_consumed} >> offset_t'(-buffer_out_shift));
 
 % if not one_write_port:
     //--------------------------------------
@@ -634,6 +661,11 @@ ${rendered_read_ports[read_port]}
 % for wp in used_write_protocols:
         idma_pkg::${database[wp]['protocol_enum']}: begin
     % if mh_format['aw'][wp] == '':
+        % if wp == 'axi':
+            buffer_out_shift = ${wp}_buffer_out_shift;
+        % else:
+            buffer_out_shift = w_dp_req_i.shift;
+        % endif
             w_dp_req_ready   = ${wp}_w_dp_ready;
             buffer_out_ready = ${wp}_buffer_out_ready;
             w_chan_valid_o   = ${wp}_w_chan_valid;
@@ -642,6 +674,11 @@ ${rendered_read_ports[read_port]}
             buffer_out_consumed = ${wp}_buffer_out_consumed;
             buffer_out_offer = ${wp}_buffer_out_offer;
     % else:
+        % if wp == 'axi':
+            buffer_out_shift = ${wp}_buffer_out_shift[w_dp_req_i.dst_head];
+        % else:
+            buffer_out_shift = w_dp_req_i.shift;
+        % endif
             w_dp_req_ready   = ${wp}_w_dp_ready [w_dp_req_i.dst_head];
             buffer_out_ready = ${wp}_buffer_out_ready [w_dp_req_i.dst_head];
             w_chan_valid_o   = ${wp}_w_chan_valid [w_dp_req_i.dst_head];
@@ -654,6 +691,7 @@ ${rendered_read_ports[read_port]}
 % endfor
         default: begin
             w_dp_req_ready   = 1'b0;
+            buffer_out_shift = '0;
             buffer_out_ready = '0;
             w_chan_valid_o   = 1'b0;
             w_chan_ready_o   = 1'b0;

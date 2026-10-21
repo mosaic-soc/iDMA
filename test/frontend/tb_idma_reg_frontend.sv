@@ -46,6 +46,9 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
   localparam int unsigned MaxReadLatency = 32'd0;
   // watchdog: a next_id read outstanding this long is a hang
   localparam int unsigned DeadlockCycles = 32'd2000;
+  // Independent AXI sizes: source 2 bytes, destination 4 bytes, both enabled.
+  localparam logic [31:0] SizeConf = (32'd1 << 24) | (32'd1 << 25) |
+                                      (32'd1 << 26) | (32'd2 << 29);
 
   // register map (idma_reg32_3d_addrmap_pkg): base + per-stream stride 0x4
   localparam logic [31:0] RegConf     = 32'h0000_0000;
@@ -612,6 +615,10 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
       check_eq(captured_q[0].burst_req.src_addr, 32'h1000_0000, "Test1 src_addr");
       check_eq(captured_q[0].burst_req.dst_addr, 32'h2000_0000, "Test1 dst_addr");
       check_eq(captured_q[0].burst_req.length,   32'h0000_0040, "Test1 length");
+      check_eq(captured_q[0].burst_req.opt.beo.src_size_enable, 1'b0,
+               "Test1 source size defaults to bus width");
+      check_eq(captured_q[0].burst_req.opt.beo.dst_size_enable, 1'b0,
+               "Test1 destination size defaults to bus width");
     end
     poll_done(id0);
     $display("[ ok ] Test1 done_id reached %0d", id0);
@@ -626,6 +633,7 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
     // model a busy backend: hold req_ready LOW so the arbiter cannot grant
     set_req_ready(1'b0);
     program_transfer(32'h3000_0000, 32'h4000_0000, 32'h0000_0080);
+    apb_write(RegConf, SizeConf);
     exp_id = next_id;                 // id that this launch returns
     // the read completes despite req_ready low — the non-blocking property
     launch(id1, rcyc);
@@ -636,6 +644,8 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
     // ID allocation is tied to the successful register read, not the later backend handshake.
     @(backend_cb);
     check_eq(next_id, exp_id + 32'd1, "Test2 id advances while request output is stalled");
+    // The queued launch must retain its sizes when software configures the next job.
+    apb_write(RegConf, 32'h0);
     // release backpressure — the held launch now completes exactly once
     set_req_ready(1'b1);
     wait_launch_accepted();
@@ -643,6 +653,12 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
     if (captured_q.size() > 0) begin
       check_eq(captured_q[0].burst_req.src_addr, 32'h3000_0000, "Test2 src_addr held");
       check_eq(captured_q[0].burst_req.length,   32'h0000_0080, "Test2 length held");
+      check_eq(captured_q[0].burst_req.opt.beo.src_size_enable, 1'b1,
+               "Test2 source size enable held");
+      check_eq(captured_q[0].burst_req.opt.beo.dst_size_enable, 1'b1,
+               "Test2 destination size enable held");
+      check_eq(captured_q[0].burst_req.opt.beo.src_size, 3'd1, "Test2 source size held");
+      check_eq(captured_q[0].burst_req.opt.beo.dst_size, 3'd2, "Test2 destination size held");
     end
     // let it retire and confirm the reg block is still live afterwards
     backend_auto_retire = 1'b1;

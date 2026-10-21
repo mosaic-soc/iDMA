@@ -70,6 +70,7 @@ def render_read_mgr_inst(prot_id: str, prot_ids: dict, db: dict) -> dict:
                 read_meta_valid = 'ar_gated_valid'
                 read_meta_ready = 'ar_gated_ready'
                 buffer_in = 'buffer_in'
+                buffer_in_shift = 'buffer_in_shift'
                 buffer_in_valid = 'buffer_in_valid'
                 buffer_in_beat = 'buffer_in_beat'
             else:
@@ -112,6 +113,7 @@ ar_gated_valid\
 '''
                 read_meta_ready = f'{rp}_ar_ready{mh_bus}'
                 buffer_in = f'{rp}_buffer_in{mh_bus}'
+                buffer_in_shift = f'{rp}_buffer_in_shift{mh_bus}'
                 buffer_in_valid = f'{rp}_buffer_in_valid{mh_bus}'
                 buffer_in_beat = f'{rp}_buffer_in_beat{mh_bus}'
 
@@ -130,6 +132,7 @@ ar_gated_valid\
                 'read_request': f'{rp}_read_req_{read_port_dir_req_str}{mh_bus}',
                 'read_response': f'{rp}_read_rsp_{read_port_dir_rsp_str}{mh_bus}',
                 'buffer_in': buffer_in,
+                'buffer_in_shift': buffer_in_shift,
                 'buffer_in_valid': buffer_in_valid,
                 'buffer_in_beat': buffer_in_beat,
                 'mh': mh
@@ -199,6 +202,7 @@ def render_write_mgr_inst(prot_id: str, prot_ids: dict, db: dict) -> dict:
                 buffer_out_ready = 'buffer_out_ready'
                 buffer_out_offer = 'buffer_out_offer'
                 buffer_out_consumed = 'buffer_out_consumed'
+                buffer_out_shift = 'buffer_out_shift'
             else:
                 if num_heads == 1:
                     write_dp_valid_in = f'''\
@@ -234,6 +238,7 @@ aw_valid_i\
                 buffer_out_ready = f'{wp}_buffer_out_ready{mh_bus}'
                 buffer_out_offer = f'{wp}_buffer_out_offer{mh_bus}'
                 buffer_out_consumed = f'{wp}_buffer_out_consumed{mh_bus}'
+                buffer_out_shift = f'{wp}_buffer_out_shift{mh_bus}'
 
             write_port_context = {
                 'database': db,
@@ -255,6 +260,7 @@ aw_valid_i\
                 'buffer_out_ready': buffer_out_ready,
                 'buffer_out_offer': buffer_out_offer,
                 'buffer_out_consumed': buffer_out_consumed,
+                'buffer_out_shift': buffer_out_shift,
                 'mh': mh
             }
 

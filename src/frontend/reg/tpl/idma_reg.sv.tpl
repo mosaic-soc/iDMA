@@ -286,6 +286,10 @@ module idma_${identifier} #(
       nxt_dma_req${sep}opt.beo.src_reduce_len = dma_reg2hw[i].conf.src_reduce_len.value;
       nxt_dma_req${sep}opt.beo.dst_reduce_len = dma_reg2hw[i].conf.dst_reduce_len.value;
       nxt_dma_req${sep}opt.beo.deadlock_free  = dma_reg2hw[i].conf.deadlock_free.value;
+      nxt_dma_req${sep}opt.beo.src_size_enable = dma_reg2hw[i].conf.src_size_enable.value;
+      nxt_dma_req${sep}opt.beo.dst_size_enable = dma_reg2hw[i].conf.dst_size_enable.value;
+      nxt_dma_req${sep}opt.beo.src_size        = dma_reg2hw[i].conf.src_size.value;
+      nxt_dma_req${sep}opt.beo.dst_size        = dma_reg2hw[i].conf.dst_size.value;
 
       // Optional on-the-fly compute settings are part of the transfer descriptor and
       // are captured together with the address/stride fields when next_id is read.

@@ -365,6 +365,10 @@ module idma_nd_midend_synth #(
     assign nd_req.burst_req.opt.beo.src_max_llen   = req_src_max_llen_i;
     assign nd_req.burst_req.opt.beo.decouple_aw    = req_decouple_aw_i;
     assign nd_req.burst_req.opt.beo.deadlock_free  = req_deadlock_free_i;
+    assign nd_req.burst_req.opt.beo.src_size_enable = 1'b0;
+    assign nd_req.burst_req.opt.beo.dst_size_enable = 1'b0;
+    assign nd_req.burst_req.opt.beo.src_size        = '0;
+    assign nd_req.burst_req.opt.beo.dst_size        = '0;
     assign nd_req.burst_req.opt.last               = req_last_i;
     assign nd_req.burst_req.opt.compute            = '0;
     assign nd_req.burst_req.scale_addr             = '0;

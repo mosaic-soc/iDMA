@@ -417,6 +417,10 @@ ${p}_${database[p]['write_meta_channel']}_width\
     assign idma_req.opt.beo.src_max_llen   = req_src_max_llen_i;
     assign idma_req.opt.beo.decouple_aw    = req_decouple_aw_i;
     assign idma_req.opt.beo.deadlock_free  = req_deadlock_free_i;
+    assign idma_req.opt.beo.src_size_enable = 1'b0;
+    assign idma_req.opt.beo.dst_size_enable = 1'b0;
+    assign idma_req.opt.beo.src_size        = '0;
+    assign idma_req.opt.beo.dst_size        = '0;
     assign idma_req.opt.last               = req_last_i;
 % if compute_eligible:
     assign idma_req.opt.compute.enable     = req_compute_enable_i;

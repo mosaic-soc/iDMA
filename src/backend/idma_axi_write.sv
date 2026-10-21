@@ -7,6 +7,7 @@
 // - Tobias Senti <tsenti@ethz.ch>
 
 `include "common_cells/registers.svh"
+`include "common_cells/assertions.svh"
 
 /// Implementing the AXI4 write task in the iDMA transport layer.
 module idma_axi_write #(
@@ -21,6 +22,10 @@ module idma_axi_write #(
     parameter type data_t = logic,
     /// Offset type
     parameter type strb_t = logic,
+    /// Physical bus and FIFO lane index type
+    parameter type offset_t = logic,
+    /// Payload byte-count type
+    parameter type tf_len_t = logic,
 
     /// AXI 4 Request channel type
     parameter type write_req_t = logic,
@@ -82,15 +87,13 @@ module idma_axi_write #(
     output strb_t buffer_out_offer_o,
     /// Logical byte positions consumed, before applying the external write-strobe mask
     output strb_t buffer_out_consumed_o,
+    /// Rotation from FIFO positions to this beat's physical bus lanes
+    output offset_t buffer_shift_o,
     /// External write-strobe mask (ANDed into wstrb); tie to '1 when unused
     input  strb_t mask_ext_i
 );
-    // offsets needed for masks to empty buffer
-    strb_t w_first_mask;
-    strb_t w_last_mask;
-
     // corresponds to the strobe: the write aligned data that is currently valid in the buffer
-    strb_t mask_out, offer_mask;
+    strb_t mask_out;
     // Byte positions belonging to this write beat, before suppressing compute-invalid bytes.
     strb_t logical_mask_out;
 
@@ -100,11 +103,6 @@ module idma_axi_write #(
 
     // buffer is ready to write the requested data
     logic ready_to_write;
-    // first transfer is possible - this signal is used to detect
-    // the first write transfer in a burst
-    logic first_possible;
-    // buffer is completely empty
-    logic buffer_clean;
     // write happens
     logic write_happening;
 
@@ -117,18 +115,28 @@ module idma_axi_write #(
     logic [7:0] w_num_beats_d, w_num_beats_q;
     logic       w_cnt_valid_d, w_cnt_valid_q;
 
+    // The queued request supplies the first beat without a setup cycle. Thereafter,
+    // only accepted W beats advance the physical lane, FIFO lane, and byte count.
+    offset_t bus_lane_d, bus_lane_q, bus_lane;
+    offset_t fifo_lane_d, fifo_lane_q, fifo_lane;
+    tf_len_t bytes_left_d, bytes_left_q, bytes_left;
+    typedef logic [$clog2(StrbWidth):0] beat_bytes_t;
+    beat_bytes_t beat_bytes, beat_offset, available_bytes, payload_bytes;
+
     //--------------------------------------
     // Mask pre-calculation
     //--------------------------------------
-    // in contiguous transfers that are unaligned, there will be some
-    // invalid bytes at the beginning and the end of the stream
-    // example: 25B in 64 bit system
-    //  iiiivvvv|vvvvvvvv|vvvvvvvv|vvvvviii
-    // first msk|----full mask----|last msk
-
-    // write align masks
-    assign w_first_mask = '1 << w_dp_req_i.offset;
-    assign w_last_mask  = '1 >> (StrbWidth - w_dp_req_i.tailer);
+    assign bus_lane   = first_w ? w_dp_req_i.offset     : bus_lane_q;
+    assign fifo_lane  = first_w ? w_dp_req_i.start_lane : fifo_lane_q;
+    assign bytes_left = first_w ? w_dp_req_i.num_bytes  : bytes_left_q;
+    assign beat_bytes = beat_bytes_t'(1) << w_dp_req_i.size;
+    assign beat_offset = beat_bytes_t'(bus_lane) & (beat_bytes - 1'b1);
+    assign available_bytes = beat_bytes - beat_offset;
+    assign payload_bytes = bytes_left < tf_len_t'(available_bytes)
+        ? beat_bytes_t'(bytes_left) : available_bytes;
+    // Data and valid rotate forward in the transport layer; ready/offer/consumed
+    // rotate back by the same amount. FIXED repeats bus lanes, not FIFO lanes.
+    assign buffer_shift_o = fifo_lane - bus_lane;
 
     //--------------------------------------
     // Write meta channel
@@ -145,13 +153,9 @@ module idma_axi_write #(
     // only pop the data actually needed for write from the buffer,
     // determine valid data to pop by calculation the wstrb
     always_comb begin : proc_out_mask_generator
-        // default case: all ones
-        logical_mask_out = '1;
-        // is first word: some bytes at the beginning may be invalid
-        logical_mask_out = first_w ? (logical_mask_out & w_first_mask) : logical_mask_out;
-        // is last word in write burst: some bytes at the end may be invalid
-        if (w_dp_req_i.tailer != '0 & last_w) begin
-            logical_mask_out = logical_mask_out & w_last_mask;
+        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
+            logical_mask_out[lane] = lane >= int'(bus_lane) &&
+                                    lane < int'(bus_lane) + int'(payload_bytes);
         end
         // external mask (OTF compute)
         mask_out = logical_mask_out & mask_ext_i;
@@ -167,32 +171,20 @@ module idma_axi_write #(
     // is required. The write unit needs to keep track of progress through
     // a counter and cannot use `r last` for that.
 
-    // Once buffer contains a full line -> all FIFOs are non-empty push it out.
-
-    // all elements needed (defined by the mask) are in the buffer and the buffer is non-empty
+    // Only the current beat's payload lanes must be available. For compute, the
+    // external mask may suppress every lane; still require an offered engine beat
+    // so zero-strobe writes cannot run ahead of the compute stream.
     assign ready_to_write = w_dp_valid_i & ((buffer_out_valid_i & mask_out) == mask_out)
         & (buffer_out_valid_i != '0);
-
-    // data needed by the first mask is available in the buffer -> r_first happened for sure
-    // this signal can be high during a transfer as well, it needs to be masked
-    assign first_possible = ((buffer_out_valid_i & w_first_mask) == w_first_mask) &
-                            (buffer_out_valid_i != '0);
-
-    // the buffer is completely empty and idle
-    assign buffer_clean = &(~buffer_out_valid_i);
 
     // write happening: both the bus (w_ready) and the buffer (ready_to_write) is high
     assign write_happening = ready_to_write & write_rsp_i.w_ready;
 
     // the main buffer is conditionally to the write mask popped
     assign buffer_out_ready_o = write_happening ? mask_out : '0;
-    // the next beat's lanes without the buffer state: first while the beat counter is unloaded
-    always_comb begin : proc_offer_mask
-        offer_mask = (w_dp_req_i.is_single | ~w_cnt_valid_q) ? w_first_mask : '1;
-        if (w_dp_req_i.tailer != '0 & last_w) offer_mask = offer_mask & w_last_mask;
-        offer_mask = offer_mask & mask_ext_i;
-    end
-    assign buffer_out_offer_o = w_dp_valid_i ? offer_mask : '0;
+    // Independent of FIFO occupancy, allowing its lookahead logic to accept bytes
+    // for precisely those lanes that the current beat can drain.
+    assign buffer_out_offer_o = w_dp_valid_i ? mask_out : '0;
     // Compute beats track all logical positions, including those suppressed by their strobe.
     assign buffer_out_consumed_o = write_happening ? logical_mask_out : '0;
 
@@ -255,9 +247,9 @@ module idma_axi_write #(
         // in the burst case the counters are needed to keep track of the progress of sending
         // beats. The w_last_o depends on the state of the counter
         end else begin
-            // first transfer happens as soon as a) the buffer is ready for a first transfer and b)
-            // the counter is currently invalid
-            first_w = first_possible & ~w_cnt_valid_q;
+            // Identify the first beat independently of buffer occupancy. Mask and
+            // rotation must be known before deciding whether its bytes are available.
+            first_w = ~w_cnt_valid_q;
 
             // last happens as soon as a) the counter is valid and b) the counter is now down to 1
             last_w  = w_cnt_valid_q & (w_num_beats_q == 8'h01);
@@ -276,6 +268,20 @@ module idma_axi_write #(
 
             // count down the beats if the counter is valid and valid data is written to the bus
             if (w_cnt_valid_q && write_happening) w_num_beats_d = w_num_beats_q - 8'h01;
+        end
+    end
+
+    always_comb begin : proc_write_positions
+        bus_lane_d = bus_lane_q;
+        fifo_lane_d = fifo_lane_q;
+        bytes_left_d = bytes_left_q;
+        if (write_happening) begin
+            bus_lane_d = bus_lane;
+            if (w_dp_req_i.burst == axi_pkg::BURST_INCR) begin
+                bus_lane_d = bus_lane + offset_t'(available_bytes);
+            end
+            fifo_lane_d = fifo_lane + offset_t'(payload_bytes);
+            bytes_left_d = bytes_left - tf_len_t'(payload_bytes);
         end
     end
 
@@ -317,5 +323,19 @@ module idma_axi_write #(
     //--------------------------------------
     `FF(w_cnt_valid_q, w_cnt_valid_d, '0, clk_i, rst_ni)
     `FF(w_num_beats_q, w_num_beats_d, '0, clk_i, rst_ni)
+    `FF(bus_lane_q,    bus_lane_d,    '0, clk_i, rst_ni)
+    `FF(fifo_lane_q,   fifo_lane_d,   '0, clk_i, rst_ni)
+    `FF(bytes_left_q,  bytes_left_d,  '0, clk_i, rst_ni)
+
+    `ASSERT(WriteSizeFits, w_dp_valid_i |-> int'(w_dp_req_i.size) <= $clog2(StrbWidth),
+            clk_i, !rst_ni, "AXI write size must not exceed the physical bus width")
+    `ASSERT(WritePayloadNonzero, write_happening |-> payload_bytes != '0,
+            clk_i, !rst_ni, "Accepted AXI write beats must contain logical payload bytes")
+    `ASSERT(WriteLastMatchesLength, write_happening |->
+                last_w == (bytes_left == tf_len_t'(payload_bytes)),
+            clk_i, !rst_ni, "AXI WLAST must coincide with the final logical payload byte")
+    `ASSERT(WriteStableWhenStalled, write_req_o.w_valid && !write_rsp_i.w_ready |=>
+                write_req_o.w_valid && $stable(write_req_o.w),
+            clk_i, !rst_ni, "AXI write payload changed while waiting for WREADY")
 
 endmodule
