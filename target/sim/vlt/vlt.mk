@@ -101,7 +101,7 @@ $(IDMA_VLT_DIR)/build-%/vlt.bin: \
 
 define idma_vlt_define_run_target
 .PHONY: idma_vlt_run_$(1)
-idma_vlt_run_$(1): $(IDMA_VLT_DIR)/build-$(1)/vlt.bin
+idma_vlt_run_$(1): $(IDMA_VLT_DIR)/build-$(1)/vlt.bin $$(IDMA_VLT_RUN_DEPS_$(1))
 	$$< $$(IDMA_VLT_RUN_ARGS_$(1))
 endef
 

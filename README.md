@@ -474,8 +474,22 @@ Use `make doc` to build the documentation. The output is located at `doc/build`.
 
 
 ### Simulation
-We currently do not include any free and open-source simulation setup. However, if you have access to
-[*Questa advanced simulator*](https://eda.sw.siemens.com/en-US/ic/questa/simulation/advanced-simulator/),
+Verilator can run the generated backend job-file testbenches and selected handwritten
+testbenches:
+
+```bash
+make idma_sim_vlt_tb_idma_backend_rw_axi
+make idma_sim_vlt_tb_idma_backend_rw_axi IDMA_VLT_JOB=mixed
+make idma_sim_vlt_backends
+make idma_sim_vlt_all
+```
+
+Each generated backend uses `jobs/backend_<variant>/simple.txt` by default.
+`IDMA_VLT_JOB` selects another job name, or `IDMA_VLT_JOB_FILE` supplies an explicit
+path. See the [verification guide](doc/site/src/content/docs/guides/verification.mdx)
+for configuration details.
+
+With [*Questa advanced simulator*](https://eda.sw.siemens.com/en-US/ic/questa/simulation/advanced-simulator/),
 a simulation can be launched using:
 
 ```bash

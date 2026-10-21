@@ -815,6 +815,7 @@ idma_lint_all: idma_lint_elab idma_lint_inst64
 # Verilator sim
 
 include $(IDMA_ROOT)/target/sim/vlt/testbenches.mk
+include $(IDMA_ROOT)/target/sim/vlt/backends.mk
 include $(IDMA_ROOT)/target/sim/vlt/vlt.mk
 
 # ---------------
