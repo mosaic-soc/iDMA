@@ -106,8 +106,13 @@ module idma_axil_write #(
     // only pop the data actually needed for write from the buffer,
     // determine valid data to pop by calculation the wstrb
 
-    assign mask_out = ('1 << w_dp_req_i.offset) &
-        ((w_dp_req_i.tailer != '0) ? ('1 >> (StrbWidth - w_dp_req_i.tailer)) : '1);
+    // This legalized request fits one physical beat; select its payload bytes directly.
+    always_comb begin : proc_payload_mask
+        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
+            mask_out[lane] = lane >= int'(w_dp_req_i.offset) &&
+                lane < int'(w_dp_req_i.offset) + int'(w_dp_req_i.num_bytes);
+        end
+    end
 
     //--------------------------------------
     // Write control

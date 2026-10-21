@@ -217,7 +217,6 @@ ${database[p]['page_size']}\
     offset_t r_beat_mask, w_beat_mask;
     offset_t r_beat_offset, w_beat_offset;
     offset_t r_fifo_start_lane, w_fifo_start_lane;
-    offset_t r_tailer, w_tailer;
     addr_t r_axi_addr, w_axi_addr;
     axi_pkg::len_t r_num_beats, w_num_beats;
 
@@ -1053,20 +1052,6 @@ w_tf_q.length[PageAddrWidth:0] ),
     assign w_num_beats = axi_pkg::len_t'(
         (w_num_bytes + page_len_t'(w_beat_offset) - page_len_t'(1)) >> opt_w_q.dst_size);
 
-    always_comb begin : gen_tailers
-        r_tailer = OffsetWidth'(r_num_bytes + page_len_t'(r_addr_offset));
-        w_tailer = OffsetWidth'(w_num_bytes + page_len_t'(w_addr_offset));
-        // FIXED repeats its physical lane window. Only the final beat may be partial.
-        if (r_fixed_burst) begin
-            r_tailer = r_addr_offset +
-                (OffsetWidth'(r_num_bytes - page_len_t'(1)) & r_beat_mask) + 1'b1;
-        end
-        if (w_fixed_burst) begin
-            w_tailer = w_addr_offset +
-                (OffsetWidth'(w_num_bytes - page_len_t'(1)) & w_beat_mask) + 1'b1;
-        end
-    end
-
     // Read meta channel
 % if one_read_port:
     always_comb begin
@@ -1096,7 +1081,6 @@ ${database[protocol]['legalizer_read_meta_channel']}
         burst:        opt_tf_q.src_axi_opt.burst,
         fifo_start_lane:   r_req_o.fifo_start_lane,
         offset:       r_addr_offset,
-        tailer:       r_tailer,
         decouple_aw:  opt_tf_q.decouple_aw,
 % if compute_eligible:
         is_single:    r_num_beats == '0,
@@ -1126,7 +1110,6 @@ ${database[used_write_protocols[0]]['legalizer_write_data_path']}
             burst:        opt_w_q.dst_axi_opt.burst,
             fifo_start_lane:   w_fifo_start_lane,
             offset:       w_addr_offset,
-            tailer:       w_tailer,
             num_beats:    'd0,
             is_single:    1'b1,
             compute:      opt_w_q.compute
@@ -1165,7 +1148,6 @@ ${database[protocol]['legalizer_write_data_path']}
                 burst:        opt_w_q.dst_axi_opt.burst,
                 fifo_start_lane:   w_fifo_start_lane,
                 offset:       w_addr_offset,
-                tailer:       w_tailer,
                 num_beats:    'd0,
                 is_single:    1'b1,
                 compute:      opt_w_q.compute

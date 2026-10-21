@@ -75,6 +75,8 @@ module idma_tilelink_read #(
     // offsets needed for masks to empty buffer
     strb_t r_first_mask;
     strb_t r_last_mask;
+    // End of the burst's payload modulo the bus width; zero means a full final word.
+    logic [$clog2(StrbWidth)-1:0] end_lane;
 
     // read aligned in mask. needs to be shifted together with the data before
     // it can be used to mask valid data flowing into the buffer
@@ -110,8 +112,9 @@ module idma_tilelink_read #(
     // first msk|----full mask----|last msk
 
     // read align masks
+    assign end_lane = r_dp_req_i.offset + $clog2(StrbWidth)'(r_dp_req_i.num_bytes);
     assign r_first_mask = '1 << r_dp_req_i.offset;
-    assign r_last_mask  = '1 >> (StrbWidth - r_dp_req_i.tailer);
+    assign r_last_mask  = '1 >> (StrbWidth - end_lane);
 
     //--------------------------------------
     // Read meta channel
@@ -133,7 +136,7 @@ module idma_tilelink_read #(
         read_aligned_in_mask = first_r_q ?
             read_aligned_in_mask & r_first_mask : read_aligned_in_mask;
         // is last word in write burst: some bytes at the end may be invalid
-        if (r_dp_req_i.tailer != '0) begin
+        if (end_lane != '0) begin
             read_aligned_in_mask = last ?
                 read_aligned_in_mask & r_last_mask : read_aligned_in_mask;
         end

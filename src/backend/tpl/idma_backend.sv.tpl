@@ -218,8 +218,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// - `size`: Resolved log2(bytes per beat)
     /// - `burst`: Address progression mode on the selected bus
     /// - `fifo_start_lane`: FIFO lane receiving this burst's first payload byte
-    /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
-    ///              bus width.
     /// - `decouple_aw`: If the transfer has the AW decoupled from the R
     /// - `is_single`: Is this transfer just one beat long? `(len == 0)`
 % if compute_eligible:
@@ -233,7 +231,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         axi_pkg::burst_t      burst;
         offset_t              fifo_start_lane;
         offset_t              offset;
-        offset_t              tailer;
         logic                 decouple_aw;
         logic                 is_single;
 % if compute_eligible:
@@ -258,8 +255,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
     /// - `size`: Resolved log2(bytes per beat)
     /// - `burst`: Address progression mode on the selected bus
     /// - `fifo_start_lane`: FIFO lane containing this burst's first payload byte
-    /// - `trailer`: How many empty bytes are required to pad the transfer to a multiple of the
-    ///              bus width.
     /// - `num_beats`: The number of beats this burst consist of
     /// - `is_single`: Is this transfer just one beat long? `(len == 0)`
     typedef struct packed {
@@ -270,7 +265,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
         axi_pkg::burst_t      burst;
         offset_t              fifo_start_lane;
         offset_t              offset;
-        offset_t              tailer;
         axi_pkg::len_t        num_beats;
         logic                 is_single;
         idma_pkg::compute_options_t compute;
@@ -624,7 +618,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             burst:        idma_req_i.opt.src.burst,
             fifo_start_lane:   '0,
             offset:       idma_req_i.src_addr[OffsetWidth-1:0],
-            tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.src_addr[OffsetWidth-1:0]),
             decouple_aw:  idma_req_i.opt.beo.decouple_aw,
 % if compute_eligible:
             is_single:    len == '0,
@@ -649,7 +642,6 @@ _rsp_t ${mh_format['aw'][protocol]}${protocol}_write_rsp_i,
             burst:        idma_req_i.opt.dst.burst,
             fifo_start_lane:   '0,
             offset:       idma_req_i.dst_addr[OffsetWidth-1:0],
-            tailer:       OffsetWidth'(idma_req_i.length + idma_req_i.dst_addr[OffsetWidth-1:0]),
             num_beats:    len,
             is_single:    len == '0,
             compute:      idma_req_i.opt.compute

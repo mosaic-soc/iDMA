@@ -88,6 +88,8 @@ module idma_tilelink_write #(
     // offsets needed for masks to empty buffer
     strb_t w_first_mask;
     strb_t w_last_mask;
+    // End of the burst's payload modulo the bus width; zero means a full final word.
+    logic [$clog2(StrbWidth)-1:0] end_lane;
 
     // corresponds to the strobe: the write aligned data that is currently valid in the buffer
     strb_t mask_out, offer_mask;
@@ -125,8 +127,9 @@ module idma_tilelink_write #(
     // first msk|----full mask----|last msk
 
     // write align masks
+    assign end_lane = w_dp_req_i.offset + $clog2(StrbWidth)'(w_dp_req_i.num_bytes);
     assign w_first_mask = '1 << w_dp_req_i.offset;
-    assign w_last_mask  = '1 >> (StrbWidth - w_dp_req_i.tailer);
+    assign w_last_mask  = '1 >> (StrbWidth - end_lane);
 
     //--------------------------------------
     // Out mask generation -> (mask)
@@ -139,7 +142,7 @@ module idma_tilelink_write #(
         // is first word: some bytes at the beginning may be invalid
         mask_out = first_w ? (mask_out & w_first_mask) : mask_out;
         // is last word in write burst: some bytes at the end may be invalid
-        if (w_dp_req_i.tailer != '0 & last_w) begin
+        if (end_lane != '0 & last_w) begin
             mask_out = mask_out & w_last_mask;
         end
     end
@@ -176,7 +179,7 @@ module idma_tilelink_write #(
     // the next beat's lanes without the buffer state: first while the beat counter is unloaded
     always_comb begin : proc_offer_mask
         offer_mask = (w_dp_req_i.is_single | ~w_cnt_valid_q) ? w_first_mask : '1;
-        if (w_dp_req_i.tailer != '0 & last_w) offer_mask = offer_mask & w_last_mask;
+        if (end_lane != '0 & last_w) offer_mask = offer_mask & w_last_mask;
     end
     assign buffer_out_offer_o = (write_meta_valid_i & w_dp_valid_i) ? offer_mask : '0;
     assign buffer_out_consumed_o = buffer_out_ready_o;

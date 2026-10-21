@@ -95,8 +95,13 @@ module idma_axil_read #(
     //  iiiivvvv|vvvvvvvv|vvvvvvvv|vvvvviii
     // first msk|----full mask----|last msk
 
-    assign read_aligned_in_mask = ('1 << r_dp_req_i.offset) &
-        ((r_dp_req_i.tailer != '0) ? ('1 >> (StrbWidth - r_dp_req_i.tailer)) : '1);
+    // This legalized request fits one physical beat; select its payload bytes directly.
+    always_comb begin : proc_payload_mask
+        for (int unsigned lane = 0; lane < StrbWidth; lane++) begin
+            read_aligned_in_mask[lane] = lane >= int'(r_dp_req_i.offset) &&
+                lane < int'(r_dp_req_i.offset) + int'(r_dp_req_i.num_bytes);
+        end
+    end
 
 
     //--------------------------------------
