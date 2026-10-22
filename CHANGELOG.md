@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Register-frontend FIXED selection through `conf.src_fixed` (bit 22) and
   `conf.dst_fixed` (bit 23). Both default to INCR and are captured per queued job.
   Frontend tests cover all combinations and configuration changes while queued.
+- Descriptor-frontend runtime AXI sizes: flag bit 5 enables source size, bit 25
+  enables destination size, and bits 28:26 / 31:29 select log2(bytes per beat).
+  Descriptor size and existing fields are unchanged; cleared enables retain full-width
+  accesses. Add directed descriptor-chain coverage for changing sizes, safe mode,
+  backend backpressure, writebacks, and IRQs.
 
 ### Fixed
 - The RT midend explicitly selects INCR bursts for sequential transfers. A zero

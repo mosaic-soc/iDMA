@@ -131,6 +131,7 @@ module tb_idma_desc64_bench
             burst.opt.beo.src_reduce_len == burst.opt.beo.dst_reduce_len;
         }
         constraint reduce_len_zero_c { burst.opt.beo.src_reduce_len == 1'b0; }
+        // This performance benchmark intentionally retains full-width transfers.
         constraint beo_zero_c {
             burst.opt.beo.decouple_aw   == '0 && burst.opt.beo.src_max_llen == '0 &&
             burst.opt.beo.dst_max_llen == '0 && burst.opt.last           == '0 &&
@@ -663,40 +664,23 @@ module tb_idma_desc64_bench
     endtask
 
     function automatic logic [63:0] stimulus_to_flag_bits(stimulus_t stim);
-        // Copied from frontend:
-        // bit  0         set to trigger an irq on completion, unset to not be notified
-        // bits 2:1       burst type for source, fixed: 00, incr: 01, wrap: 10
-        // bits 4:3       burst type for destination, fixed: 00, incr: 01, wrap: 10
-        //                for a description of these modes, check AXI-Pulp documentation
-        // bit  5         set to decouple reads and writes in the backend
-        // bit  6         set to serialize requests. Not setting might violate AXI spec
-        // bit  7         set to deburst (each burst is split into own transfer)
-        //                for a more thorough description, refer to the iDMA backend documentation
-        // bits 11:8      Bitfield for AXI cache attributes for the source
-        // bits 15:12     Bitfield for AXI cache attributes for the destination
-        //                bits of the bitfield (refer to AXI-Pulp for a description):
-        //                bit 0: cache bufferable
-        //                bit 1: cache modifiable
-        //                bit 2: cache read alloc
-        //                bit 3: cache write alloc
-        // bits 23:16     AXI ID used for the transfer
-        // bit  24        enable deadlock-free mode
-        // bits 31:25     unused/reserved
+        // Same flag layout as idma_desc64_top, including per-endpoint AXI sizes.
         automatic logic [63:0] result = '0;
         automatic logic [31:0] flags  = '0;
 
         flags[0]     = stim.do_irq;
         flags[2:1]   = stim.burst.opt.src.burst;
         flags[4:3]   = stim.burst.opt.dst.burst;
-        flags[5]     = 1'b0;
-        flags[6]     = 1'b0;
-        // flags[6]     = stim.burst.opt.beo.serialize;
+        flags[5]     = stim.burst.opt.beo.src_size_enable;
+        flags[6]     = stim.burst.opt.beo.decouple_aw;
         flags[7]     = stim.burst.opt.beo.src_reduce_len;
         flags[11:8]  = stim.burst.opt.src.cache;
         flags[15:12] = stim.burst.opt.dst.cache;
         flags[23:16] = stim.burst.opt.axi_id;
         flags[24]    = stim.burst.opt.beo.deadlock_free;
-        flags[31:25] = '0;
+        flags[25]    = stim.burst.opt.beo.dst_size_enable;
+        flags[28:26] = stim.burst.opt.beo.src_size;
+        flags[31:29] = stim.burst.opt.beo.dst_size;
 
         result[31:0]  = stim.burst.length;
         result[63:32] = flags;

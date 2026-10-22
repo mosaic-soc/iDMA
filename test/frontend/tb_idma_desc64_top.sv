@@ -10,6 +10,7 @@
 `include "idma/typedef.svh"
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
+`include "common_cells/assertions.svh"
 
 
 
@@ -100,6 +101,8 @@ module tb_idma_desc64_top
             burst.opt.beo.src_reduce_len == burst.opt.beo.dst_reduce_len;
         }
         constraint reduce_len_zero_c { burst.opt.beo.src_reduce_len == 1'b0; }
+        // Random cases retain the legacy full-width baseline; directed cases below
+        // set size controls explicitly without randomizing this class.
         constraint unsupported_beo_zero_c {
             burst.opt.beo.decouple_aw   == '0 && burst.opt.beo.src_max_llen == '0 &&
             burst.opt.beo.dst_max_llen == '0 && burst.opt.last           == '0 &&
@@ -289,6 +292,82 @@ module tb_idma_desc64_top
     result_t     aw_seen_result[$];
     result_t     w_seen_result[$];
     result_t     result_queue[$];
+    bit descriptor_addresses[addr_t];
+    int unsigned sized_backend_stall_cycles = 0;
+
+    /// Prepend one deterministic chain that changes size controls on every link.
+    /// The backend is modeled here: compare decoded requests, writebacks and IRQs;
+    /// payload packing itself is covered by tb_idma_backend_axi.
+    function automatic void generate_size_stimuli();
+        stimulus_t chain[$];
+        for (int i = 0; i < 8; i++) begin
+            stimulus_t stim = new();
+            stim.base = 64'h0001_0000_0000_1000 + 64'(32 * i);
+            stim.burst = '0;
+            stim.burst.src_addr = 64'h1000 + 64'(32 * i);
+            stim.burst.dst_addr = 64'h4000 + 64'(32 * i);
+            stim.burst.length = 32'(13 + i);
+            stim.burst.opt.src_protocol = idma_pkg::AXI;
+            stim.burst.opt.dst_protocol = idma_pkg::AXI;
+            stim.burst.opt.src.burst = BURST_INCR;
+            stim.burst.opt.dst.burst = BURST_INCR;
+            stim.burst.opt.src.cache = 4'ha;
+            stim.burst.opt.dst.cache = 4'h5;
+            stim.burst.opt.axi_id = 3'(i);
+            stim.burst.opt.beo.deadlock_free = i[0];
+            stim.burst.opt.beo.decouple_aw = i[0];
+            stim.burst.opt.beo.src_reduce_len = i[1];
+            stim.burst.opt.beo.dst_reduce_len = i[1];
+            stim.do_irq = i[1:0] == 2'b11;
+            case (i)
+                0: ; // Legacy descriptor: both enables and both size fields zero.
+                1: begin
+                    stim.burst.opt.beo.src_size_enable = 1;
+                    stim.burst.opt.beo.src_size = 0;
+                    stim.burst.opt.beo.dst_size = 7; // Ignored while disabled.
+                end
+                2: begin
+                    stim.burst.opt.beo.dst_size_enable = 1;
+                    stim.burst.opt.beo.src_size = 7; // Ignored while disabled.
+                    stim.burst.opt.beo.dst_size = 1;
+                end
+                3: begin
+                    stim.burst.opt.beo.src_size_enable = 1;
+                    stim.burst.opt.beo.dst_size_enable = 1;
+                    stim.burst.opt.beo.src_size = 2;
+                    stim.burst.opt.beo.dst_size = 0;
+                end
+                4: begin
+                    stim.burst.opt.beo.src_size_enable = 1;
+                    stim.burst.opt.beo.dst_size_enable = 1;
+                    stim.burst.opt.beo.src_size = 3;
+                    stim.burst.opt.beo.dst_size = 1;
+                end
+                5: begin
+                    stim.burst.opt.beo.src_size = 7;
+                    stim.burst.opt.beo.dst_size = 6;
+                end
+                6: begin
+                    stim.burst.opt.beo.src_size_enable = 1;
+                    stim.burst.opt.beo.dst_size_enable = 1;
+                    stim.burst.opt.beo.src_size = 1;
+                    stim.burst.opt.beo.dst_size = 3;
+                    stim.burst.opt.src.burst = BURST_FIXED;
+                end
+                7: stim.burst.opt.dst.burst = BURST_FIXED;
+            endcase
+            if (chain.size() != 0) chain[$].next = stim.base;
+            chain.push_back(stim);
+            // Descriptor fetch/writeback stay 64-bit, irrespective of payload sizes.
+            golden_queue.push_back('{
+                burst: stim.burst,
+                read_address: stim.base, read_length: 8'd3, read_size: 3'd3,
+                write_address: stim.base, write_length: 8'd0, write_size: 3'd3,
+                write_data: 64'hffff_ffff_ffff_ffff, did_irq: stim.do_irq
+            });
+        end
+        generated_stimuli.push_back(chain);
+    endfunction
 
     function automatic void generate_stimuli();
         repeat (NumberOfTests) begin
@@ -401,6 +480,7 @@ module tb_idma_desc64_top
         foreach (generated_stimuli[i]) begin
             foreach (generated_stimuli[i][j]) begin
                 automatic addr_t base       = generated_stimuli[i][j].base;
+                descriptor_addresses[base] = 1'b1;
                 write_mem_64(base, stimulus_to_flag_bits(generated_stimuli[i][j]));
                 if (j == (generated_stimuli[i].size() - 1)) begin
                     write_mem_64(base + 64'h8, 64'hffff_ffff_ffff_ffff);
@@ -455,40 +535,23 @@ module tb_idma_desc64_top
     endtask
 
     function automatic logic [63:0] stimulus_to_flag_bits(stimulus_t stim);
-        // Copied from frontend:
-        // bit  0         set to trigger an irq on completion, unset to not be notified
-        // bits 2:1       burst type for source, fixed: 00, incr: 01, wrap: 10
-        // bits 4:3       burst type for destination, fixed: 00, incr: 01, wrap: 10
-        //                for a description of these modes, check AXI-Pulp documentation
-        // bit  5         set to decouple reads and writes in the backend
-        // bit  6         set to serialize requests. Not setting might violate AXI spec
-        // bit  7         set to deburst (each burst is split into own transfer)
-        //                for a more thorough description, refer to the iDMA backend documentation
-        // bits 11:8      Bitfield for AXI cache attributes for the source
-        // bits 15:12     Bitfield for AXI cache attributes for the destination
-        //                bits of the bitfield (refer to AXI-Pulp for a description):
-        //                bit 0: cache bufferable
-        //                bit 1: cache modifiable
-        //                bit 2: cache read alloc
-        //                bit 3: cache write alloc
-        // bits 23:16     AXI ID used for the transfer
-        // bit  24        enable deadlock-free mode
-        // bits 31:25     unused/reserved
+        // Same flag layout as idma_desc64_top, including per-endpoint AXI sizes.
         automatic logic [63:0] result = '0;
         automatic logic [31:0] flags  = '0;
 
         flags[0]     = stim.do_irq;
         flags[2:1]   = stim.burst.opt.src.burst;
         flags[4:3]   = stim.burst.opt.dst.burst;
-        flags[5]     = 1'b0;
-        flags[6]     = 1'b0;
-        // flags[6]     = stim.burst.opt.beo.serialize;
+        flags[5]     = stim.burst.opt.beo.src_size_enable;
+        flags[6]     = stim.burst.opt.beo.decouple_aw;
         flags[7]     = stim.burst.opt.beo.src_reduce_len;
         flags[11:8]  = stim.burst.opt.src.cache;
         flags[15:12] = stim.burst.opt.dst.cache;
         flags[23:16] = stim.burst.opt.axi_id;
         flags[24]    = stim.burst.opt.beo.deadlock_free;
-        flags[31:25] = '0;
+        flags[25]    = stim.burst.opt.beo.dst_size_enable;
+        flags[28:26] = stim.burst.opt.beo.src_size;
+        flags[31:29] = stim.burst.opt.beo.dst_size;
 
         result[31:0]  = stim.burst.length;
         result[63:32] = flags;
@@ -518,9 +581,9 @@ module tb_idma_desc64_top
             wait (ar_seen_result.size() > 0);
             current_result = ar_seen_result.pop_front();
             i_axi_iface_driver.mon_r(r_beat);
-            if ($isunknown(r_beat.r_data)) begin
-                // drop current result as it is a prefetched one
-            end else begin
+            // Speculation can read beyond a chain. Classify by the loaded descriptor
+            // addresses, not X data: Verilator's two-state simulation cannot retain Xs.
+            if (descriptor_addresses.exists(current_result.read_address)) begin
                 inflight_results_after_reads.push_back(current_result);
             end
             // four reads per descriptor in the 64-bit case
@@ -629,6 +692,17 @@ module tb_idma_desc64_top
         end
     endtask
 
+    `ASSERT(BackendRequestStable,
+            dma_be_req_valid && !dma_be_req_ready |=>
+                dma_be_req_valid && $stable(dma_be_req),
+            clk, !rst_n, "Descriptor request changed while the backend was stalled")
+
+    always @(posedge clk) begin
+        if (rst_n && dma_be_req_valid && !dma_be_req_ready &&
+            (dma_be_req.opt.beo.src_size_enable || dma_be_req.opt.beo.dst_size_enable))
+            sized_backend_stall_cycles++;
+    end
+
     task automatic backend_acceptor();
         @(posedge rst_n);
         forever begin
@@ -666,6 +740,7 @@ module tb_idma_desc64_top
         static int burst_errors          = 0;
         static int irq_errors            = 0;
 
+        generate_size_stimuli();
         generate_stimuli();
         load_descriptors_into_memory();
 
@@ -764,6 +839,12 @@ module tb_idma_desc64_top
         $display("Write data    errors: %d", write_data_errors);
         $display("Burst         errors: %d", burst_errors);
         $display("IRQ           errors: %d", irq_errors);
+        assert (sized_backend_stall_cycles != 0)
+            else $fatal(1, "Sized descriptors were never exercised under backend backpressure");
+        if (!finished_simulation || read_addr_errors || read_length_errors || read_size_errors ||
+            write_addr_errors || write_length_errors || write_size_errors || write_data_errors ||
+            burst_errors || irq_errors)
+            $fatal(1, "Descriptor frontend regression failed");
         $finish();
     end : proc_scoring
 

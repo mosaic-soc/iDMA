@@ -99,9 +99,9 @@ typedef struct packed {
     /// bits 2:1       burst type for source, fixed: 00, incr: 01, wrap: 10
     /// bits 4:3       burst type for destination, fixed: 00, incr: 01, wrap: 10
     ///                for a description of these modes, check AXI-Pulp documentation
-    /// bit  5         set to decouple reads and writes in the backend
-    /// bit  6         set to serialize requests. Not setting might violate AXI spec
-    /// bit  7         set to deburst (each burst is split into own transfer)
+    /// bit  5         enable src_size; when clear, read full-width and ignore src_size
+    /// bit  6         hold write addresses until corresponding read data arrives (decouple_aw)
+    /// bit  7         limit both endpoints to single-beat bursts
     ///                for a more thorough description, refer to the iDMA backend documentation
     /// bits 11:8      Bitfield for AXI cache attributes for the source
     /// bits 15:12     Bitfield for AXI cache attributes for the destination
@@ -112,7 +112,11 @@ typedef struct packed {
     ///                bit 3: cache write alloc
     /// bits 23:16     AXI ID used for the transfer
     /// bit  24        enable deadlock-free mode by reserving data-buffer capacity before reads
-    /// bits 31:25     unused/reserved
+    /// bit  25        enable dst_size; when clear, write full-width and ignore dst_size
+    /// bits 28:26     src_size as log2(bytes per AXI read beat)
+    /// bits 31:29     dst_size as log2(bytes per AXI write beat)
+    /// Enabled sizes must fit the backend bus and require its hardware legalizer,
+    /// separate shifters, and no compute on the request. Length counts payload bytes.
     logic [31:0] flags;
     /// length of request in bytes
     logic [31:0] length;
