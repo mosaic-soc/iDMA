@@ -270,9 +270,11 @@ module idma_${identifier} #(
       nxt_dma_req${sep}opt.src_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.src_protocol.value);
       nxt_dma_req${sep}opt.dst_protocol = idma_pkg::protocol_e'(dma_reg2hw[i].conf.dst_protocol.value);
 
-      // Current backend only supports incremental burst
-      nxt_dma_req${sep}opt.src.burst = axi_pkg::BURST_INCR;
-      nxt_dma_req${sep}opt.dst.burst = axi_pkg::BURST_INCR;
+      // Captured with the complete job, so later conf writes cannot change queued bursts.
+      nxt_dma_req${sep}opt.src.burst = dma_reg2hw[i].conf.src_fixed.value ?
+          axi_pkg::BURST_FIXED : axi_pkg::BURST_INCR;
+      nxt_dma_req${sep}opt.dst.burst = dma_reg2hw[i].conf.dst_fixed.value ?
+          axi_pkg::BURST_FIXED : axi_pkg::BURST_INCR;
         // this frontend currently does not support cache variations
       nxt_dma_req${sep}opt.src.cache = axi_pkg::CACHE_MODIFIABLE;
       nxt_dma_req${sep}opt.dst.cache = axi_pkg::CACHE_MODIFIABLE;

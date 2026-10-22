@@ -49,6 +49,8 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
 
   // register map (idma_reg32_3d_addrmap_pkg): base + per-stream stride 0x4
   localparam logic [31:0] RegConf     = 32'h0000_0000;
+  localparam logic [31:0] SrcFixed    = 32'h0040_0000;
+  localparam logic [31:0] DstFixed    = 32'h0080_0000;
   localparam logic [31:0] RegStatus0  = 32'h0000_0004;
   localparam logic [31:0] RegNextId0  = 32'h0000_0044;
   localparam logic [31:0] RegDoneId0  = 32'h0000_0084;
@@ -511,6 +513,46 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
   // --------------------------------------------------------------------------
   // Test program
   // --------------------------------------------------------------------------
+  // Check all burst modes, then return to INCR. With a launch FIFO, overwrite
+  // conf before draining each job to check that burst modes are part of its snapshot.
+  task automatic test_burst_modes();
+    logic [31:0] cfg, readback, id;
+    logic err;
+    int unsigned cycles;
+    for (int unsigned k = 0; k < 5; k++) begin
+      automatic int unsigned mode = k % 4;
+      cfg = ((mode & 1) != 0 ? SrcFixed : 32'b0) |
+            ((mode & 2) != 0 ? DstFixed : 32'b0);
+      captured_q.delete();
+      captured_id_q.delete();
+      program_transfer(32'h1000, 32'h2000, 32'h100);
+      apb_write(RegConf, cfg);
+      drv[0].read(RegConf, readback, err);
+      check_eq(err, 0, "Test7 conf read succeeds");
+      check_eq(readback, cfg, "Test7 burst mode readback");
+      if (LaunchFifoDepth > 0) set_req_ready(1'b0);
+      launch(id, cycles);
+      check_eq(id != 0, 1, "Test7 launch accepted");
+      if (LaunchFifoDepth > 0) begin
+        apb_write(RegConf, cfg ^ (SrcFixed | DstFixed));
+        check_eq(captured_q.size(), 0, "Test7 job waits for backend");
+        set_req_ready(1'b1);
+      end
+      wait_launch_accepted();
+      check_eq(captured_q.size(), 1, "Test7 exactly one job captured");
+      if (captured_q.size() == 1) begin
+        check_eq(captured_q[0].burst_req.opt.src.burst,
+                 (mode & 1) != 0 ? axi_pkg::BURST_FIXED : axi_pkg::BURST_INCR,
+                 "Test7 captured source burst mode");
+        check_eq(captured_q[0].burst_req.opt.dst.burst,
+                 (mode & 2) != 0 ? axi_pkg::BURST_FIXED : axi_pkg::BURST_INCR,
+                 "Test7 captured destination burst mode");
+      end
+      poll_done(id);
+    end
+    apb_write(RegConf, 32'b0);
+  endtask
+
   logic [31:0] id0, id1, id2, id3;
   logic [31:0] exp_id;                   // id gen next_o snapshot before a launch
   logic [31:0] prev_id;                  // last returned id, for monotonic checks
@@ -537,6 +579,13 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
     $display("=====================================================");
     $display(" tb_idma_reg_frontend  (NumStreams=%0d)", NumStreams);
     $display("=====================================================");
+    begin
+      logic [31:0] cfg;
+      logic err;
+      drv[0].read(RegConf, cfg, err);
+      check_eq(err, 0, "Reset conf read succeeds");
+      check_eq(cfg & (SrcFixed | DstFixed), 0, "Reset burst modes select INCR");
+    end
 
     // ------------------------------------------------------------------
     // Test 1 — Basic launch (backend ready), non-blocking read
@@ -973,6 +1022,12 @@ module tb_idma_reg_frontend import idma_pkg::*; import apb_test::apb_driver; #(
       end
       apb_write(RegCompute, 32'h0);
     end
+
+    // ------------------------------------------------------------------
+    // Test 7: independent burst modes and queued configuration snapshots.
+    // ------------------------------------------------------------------
+    $display("\n--- Test 7: FIXED/INCR burst selection ---");
+    test_burst_modes();
 
     // ------------------------------------------------------------------
     // Summary
