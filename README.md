@@ -464,7 +464,8 @@ the configuration registers, build the documentation, and run various checks on 
 various tools are required.
 
 - [`bender >= v0.32.0`](https://github.com/pulp-platform/bender)
-- [`Verilator = v4.202`](https://www.veripool.org/verilator)
+- [Verilator](https://www.veripool.org/verilator) for lint and simulation; the behavioral
+  simulation flow is tested with v5.050
 - [`Verible >= v0.0-1051-gd4cd328`](https://github.com/chipsalliance/verible)
 - [`Python3 >= 3.11`](https://www.python.org/downloads/) with the libraries listed in
   [`pyproject.toml`](pyproject.toml), installed via [`uv`](https://docs.astral.sh/uv/): `uv sync`

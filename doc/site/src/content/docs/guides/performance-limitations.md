@@ -37,10 +37,11 @@ throughput; disabling the mode is appropriate only if the system guarantees prog
 
 ### Read Burst Size in Safe Mode
 
-The default read limit is the largest power of two that fits in `BufferDepth`,
-subject to the protocol and field limits. Depth 8 therefore permits eight-beat
-reads. A burst that reserves the whole buffer makes the next equally sized read
-wait for all lanes to drain, leaving a gap while new data arrives.
+The default read limit is `(BufferDepth - 1) * StrbWidth` bytes, before subtracting
+any first-beat prefix and subject to protocol and user limits. Depth 8 therefore
+permits seven aligned full-width beats. The spare entry allows partially assembled
+write beats to make progress. Large bursts can still delay the next read until
+most buffered data has drained, leaving a gap while new data arrives.
 
 Try a smaller limit near half the depth, rounded down to a power of two (minimum
 one beat). For depth 8, keep `deadlock_free=1`, set `src_reduce_len=1`, and set

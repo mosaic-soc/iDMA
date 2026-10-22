@@ -11,7 +11,66 @@ The backend is the lowest layer of the iDMA pipeline. It takes 1D transfer reque
 
 ### Transfer Lifecycle
 
-When a 1D transfer request arrives at the backend, it flows through three stages. First, the **legalizer** splits the request into protocol-legal bus bursts (bursts that don't cross page boundaries or exceed the protocol's maximum beat count) - respecting page boundaries, maximum burst lengths, and alignment constraints. Each burst produces a set of control signals (offset, tailer, shift) that describe how the data needs to be realigned. Second, the **transport layer** executes each burst: the read channel fetches data from the source, barrel shifters realign byte lanes, the data buffer absorbs timing differences, and the write channel stores data at the destination. Third, the **error handler** (if enabled) monitors bus responses and reports faults to software. The backend signals completion through `idma_rsp_t` once all bursts of a transfer have finished.
+When a 1D transfer request arrives at the backend, it flows through three stages. First, the **legalizer** splits the request into protocol-legal bus bursts, respecting page boundaries, maximum burst lengths, and alignment constraints. Each burst carries its payload byte count, resolved size, burst mode, physical offset, and starting FIFO lane. Second, the **transport layer** executes each burst: the read channel fetches data from the source, barrel shifters realign byte lanes, the data buffer absorbs timing differences, and the write channel stores data at the destination. Third, the **error handler** (if enabled) monitors bus responses and reports faults to software. The backend signals completion through `idma_rsp_t` once all bursts of a transfer have finished, including write responses.
+
+## Runtime AXI Sizes
+
+`backend_options_t` provides independent source and destination size controls:
+
+| Field | Meaning |
+|-------|---------|
+| `src_size_enable`, `dst_size_enable` | Apply the corresponding size field when set; otherwise use the physical bus width and ignore that field |
+| `src_size`, `dst_size` | AXI log2(bytes per beat): 0 = 1 byte, 1 = 2 bytes, through 7 = 128 bytes; must not exceed `log2(DataWidth / 8)` when enabled |
+
+Zero-initialized options preserve existing full-width accesses. Sizes and enables are
+sampled with each request; queued transfers may use different settings. `length`
+always counts **payload bytes**, not beats. Source and destination sizes may differ,
+and lengths need not be multiples of either size.
+
+Enabled size controls require `HardwareLegalizer=1`, `CombinedShifter=0`, and compute
+disabled **for that request**. The backend may still elaborate compute hardware for
+other requests. Endpoint capabilities are declared separately by
+`supports_runtime_read_size` and `supports_runtime_write_size` in `src/db/idma_*.yml`;
+currently only AXI advertises support. A different endpoint whose size control is
+disabled retains its existing full-width behavior. Unsupported combinations are
+asserted, not silently converted to another size.
+
+### Alignment and Partial Beats
+
+- INCR permits unaligned byte addresses. The legalizer aligns the bus address down to
+  the selected size, discards a read prefix, and suppresses prefix write strobes.
+- FIXED requires alignment to the **selected size**, not the physical bus width. Its
+  bus address stays constant while the logical payload stream continues to advance.
+- A partial final read still accesses the complete selected-size word. Excess bytes
+  do not enter the dataflow buffer. A partial final write retains AWSIZE and selects
+  only the remaining payload bytes with WSTRB.
+
+Software must account for read-prefix/final excess accesses and peripheral side
+effects. A six-byte transfer with four-byte FIXED reads performs two four-byte
+accesses, even though only six bytes are forwarded. Partial write strobes must also
+be supported by the destination.
+
+### Byte-Stream Packing
+
+For ordinary copies with separate shifters, logical payload byte `j` uses FIFO lane
+`j mod W`, where `W = DataWidth / 8`. Read and write FIFO positions advance independently
+by the payload bytes accepted on each R/W handshake. They continue across legalized
+bursts, including FIXED bursts, and restart at lane zero for each new transfer.
+Physical bus lanes instead follow each endpoint's address, size, and burst mode.
+
+For example, on a 64-bit bus, read six payload bytes using four-byte FIXED accesses
+at `0x1004`, and write them using two-byte INCR accesses at `0x2002`:
+
+| Access | Physical byte lanes | Payload |
+|--------|---------------------|---------|
+| R at `0x1004` | 4-7 | A, B, C, D enter FIFO lanes 0-3 |
+| R at `0x1004` again | 4-7 | E, F enter FIFO lanes 4-5; the other two read bytes are discarded |
+| W at `0x2002` | 2-3, WSTRB `0x0C` | A, B |
+| W at `0x2004` | 4-5, WSTRB `0x30` | C, D |
+| W at `0x2006` | 6-7, WSTRB `0xC0` | E, F |
+
+This is backend request behavior; the current [register frontend](../frontend/register/)
+exposes runtime sizes but selects INCR bursts on both endpoints.
 
 ## Parameters
 
@@ -118,7 +177,7 @@ Each variant also gets its own tracer header, `idma/tracer_<id>.svh`, holding th
 
 The legalizer decomposes a 1D transfer request into a sequence of protocol-legal bus bursts. Separate read and write state machines track each side's remaining bytes and current address. Read and write burst lengths are chosen independently. With compute, the write side keeps up to three accepted requests in a queue (`MxWqDepth`): while the write side still emits the bursts of an MX transfer, the read side takes the next decoupled request as soon as it has emitted its own bursts. The read side (dequant planes) and the write side (quant planes) keep separate MX plane state. While no MX transfer is on the write side, a request waits until both sides are done and the queue is empty, as without compute.
 
-The legalizer is pure control path: it does not touch the data. It computes page/burst boundaries, splits transfers accordingly, and emits `offset`, `tailer`, and `shift` values that the transport layer uses for data realignment.
+The legalizer is pure control path: it does not touch the data. It computes page/burst boundaries and emits the metadata needed to execute and realign each burst; the datapath derives masks and rotations from that metadata.
 
 ![Legalizer](/iDMA/fig/legalizer.svg)
 
@@ -126,19 +185,20 @@ The legalizer is pure control path: it does not touch the data. It computes page
 
 | Protocol | Burst Mode | Page Size | Max Beats |
 |----------|-----------|-----------|-----------|
-| AXI INCR | Address increases after each beat | 4096 B | 256 |
-| AXI FIXED | Every beat uses the same address | Repeated access stays within one page | 16 |
+| AXI INCR | `split_at_page_boundary` | 4096 B | 256 |
+| AXI FIXED | Repeated selected-size access | No page split from payload progress | 16 |
 | TileLink | `only_pow2` | 2048 B | Power-of-2 sized |
 | OBI | `not_supported` (single-beat) | StrbWidth | 1 |
 | INIT | `not_supported` (single-beat) | StrbWidth | 1 |
 | AXI Stream | `not_supported` (single-beat) | StrbWidth | 1 |
 
-AXI INCR bursts stop at 4 KiB page boundaries and contain at most 256 beats. AXI
-FIXED bursts repeat the same address and contain at most 16 beats. Read and write
-bursts are split independently; a page split on one side does not force a split
-on the other side.
+AXI INCR bursts respect the 4 KiB boundary and 256-beat limit; FIXED bursts repeat one size-aligned access and are limited to 16 beats. User limits apply independently: when `src_reduce_len` or `dst_reduce_len` is set, that endpoint is limited to `2^max_llen` beats, further restricted by its protocol limit. At size `s`, the byte capacity is `max_beats << s`, less the first-beat prefix for an unaligned INCR request. Narrower sizes therefore reduce bytes per burst for the same LLEN setting. Read and write splits need not coincide.
 
 TileLink uses power-of-2 aligned bursts with a 2048 B page size (limited by the TLToAXI4 bridge for AXI compliance); in TLToAXI4 compatibility mode, write bursts are further limited to 32 beats and never cross page boundaries. For non-bursting protocols (OBI, INIT, AXI Stream), each burst is a single bus-width beat.
+
+If `HardwareLegalizer=1` and software submits a transfer crossing a page boundary, the legalizer splits it automatically. With `HardwareLegalizer=0`, such a transfer would violate the protocol and cause undefined bus behavior.
+
+**Example**: A 5000-byte AXI INCR endpoint using 16-byte beats, starting at `0xFF8`, without user LLEN reduction or safe-mode clamping. The legalizer emits bursts carrying 8 bytes at logical address `0xFF8`, 4096 bytes at `0x1000`, and 896 bytes at `0x2000`. The first AXI address is aligned down to `0xFF0`; its eight prefix bytes are discarded or excluded by write strobes. Each burst stays within one 4 KiB page and respects the 256-beat limit.
 
 ### FIXED Bursts
 
@@ -163,13 +223,13 @@ The register frontend defaults to INCR and exposes FIXED through `conf.src_fixed
 and `conf.dst_fixed`. The instruction frontend and RT midend explicitly select
 INCR. The descriptor frontend exposes both burst fields to software.
 
-This implementation uses full bus-width AXI beats. For FIXED accesses, align the
-address to `DataWidth / 8` bytes. `length` is the number of bytes to transfer, not
+For FIXED accesses, align the address to the selected beat size, which defaults
+to `DataWidth / 8` bytes. `length` is the number of bytes to transfer, not
 the number of times to access the address. A final partial write uses byte strobes
-to leave the other bytes untouched. A final partial read still reads a whole bus
-word and discards the unused bytes. Check that this is suitable for the peripheral.
+to leave the other bytes untouched. A final partial read still reads a whole selected-size
+beat and discards the unused bytes. Check that this is suitable for the peripheral.
 
-For example, on a 64-bit bus, a 24-byte FIXED-to-INCR transfer reads three times
+For example, on a 64-bit bus with size controls disabled, a 24-byte FIXED-to-INCR transfer reads three times
 from `0x1000` and writes eight bytes each at `0x2000`, `0x2008`, and `0x2010`.
 Ordinary memory returns the same eight bytes on each read. A peripheral may return
 new data each time. With a FIXED destination in ordinary memory, later writes
@@ -192,17 +252,39 @@ The generator reads `supports_fixed_bursts` and `max_beats_per_fixed_burst` from
 each protocol's YAML file in `src/db/`. These settings control the generated
 protocol checks and FIXED burst limit.
 
-If `HardwareLegalizer=1` and software submits a transfer crossing a page boundary, the legalizer splits it automatically. With `HardwareLegalizer=0`, such a transfer would violate the protocol and cause undefined bus behavior.
+### Deadlock-Free Reservations
 
-**INCR example**: A 5000-byte transfer using a 128-bit AXI bus starts at `0xFF8`.
-With no user burst reduction or safe-mode limit, the bursts carry 8 bytes at
-`0xFF8`, 4096 bytes at `0x1000`, and 896 bytes at `0x2000`. Each stays within one
-4 KiB page and uses at most 256 beats. The 16-byte beat size matters: a narrower
-bus needs more bursts to transfer the same number of bytes.
+With `deadlock_free=1`, read admission reserves space for payload bytes in each byte-lane
+FIFO. For a burst of `N` bytes starting at FIFO lane `P`, lane `i` reserves:
+
+```text
+floor(N / W) + (((i - P) mod W) < (N mod W))
+```
+
+Discarded read prefix and final excess bytes consume no entries. Reservations include
+outstanding read responses and buffered data; credits return when bytes actually leave
+the dataflow buffer, not merely when R responses arrive. Requests with safe mode off
+are still accounted for, so switching modes between queued requests does not lose usage.
+Admission uses registered usage; a current-cycle pop makes its credit available next
+cycle, avoiding a combinational WREADY-to-ARVALID dependency.
+
+The legalizer conservatively caps each safe read burst at
+`(BufferDepth - 1) * W` bytes **before subtracting the first-beat prefix**. The spare
+entry per lane accommodates residual bytes of a partially assembled write beat.
+This is a byte limit, not a fixed beat count: smaller ARSIZE can use more beats while
+still respecting protocol and user LLEN limits. The reservation gate also checks
+existing per-lane usage before admitting a burst. Safe mode does not require R/W
+burst coupling and cannot guarantee progress from an external slave that never responds.
 
 ### Datapath Control Signals
 
-The legalizer communicates with the transport layer through internal control signals (`offset`, `tailer`, `shift`, `is_single`) that describe how each burst should be realigned. These are not visible to software - they flow through decoupling FIFOs between the two stages.
+Datapath requests carry `num_bytes` (logical payload length), `size` (resolved log2
+bytes per beat), `burst`, `offset` (initial position within the physical bus word),
+and `fifo_start_lane` (FIFO position of the first payload byte). `is_single` remains
+for protocol consumers that need it. These fields travel through decoupling FIFOs;
+active bursts never depend on a later frontend request. AXI derives each beat's
+mask, rotation, and completion from its current positions and remaining payload.
+The former request fields `tailer`, `shift`, and `num_beats` are no longer needed.
 
 ### Software Legalization
 
@@ -213,6 +295,9 @@ alone does not provide the read-buffer checks described below.
 
 For FIXED, software must also keep each burst within the 16-beat limit and keep
 the address unchanged when splitting a longer transfer.
+
+Runtime-size enables are unsupported in this mode and must remain zero. The
+hardware legalizer's safe-mode burst clamp is absent as well.
 
 ## Transport Layer
 
@@ -234,13 +319,11 @@ off by default. It requires `HardwareLegalizer=1`.
 
 The mode has two parts:
 
-1. **Shorten read bursts.** By default, the legalizer uses the largest power-of-two
-   beat limit that fits in the buffer. For example, `BufferDepth=3` allows at most
-   two full beats per read burst; depth 8 allows at most eight. A smaller user source
-   limit still applies. The LLEN field, protocol limits, and page boundaries can
-   shorten bursts further.
-   Safe mode changes the read limit only. The configured write limit and R-AW
-   coupling setting stay unchanged.
+1. **Shorten read bursts.** The legalizer caps each burst at
+   `(BufferDepth - 1) * StrbWidth` bytes before subtracting any first-beat prefix.
+   The spare entry per lane allows partially assembled write beats to make progress.
+   Smaller user limits, protocol limits, and page boundaries still apply. Safe mode
+   changes the read limit only; the write limit and R-AW coupling stay unchanged.
 2. **Reserve space before reading.** A gate between the read-address FIFO and the
    bus read module counts space already promised to earlier reads. A new read
    is allowed only if every byte-lane FIFO has enough room for its complete
@@ -270,22 +353,23 @@ leave the mode off only when the surrounding system already guarantees progress.
 
 #### Choosing a Read Burst Limit
 
-The largest burst that fits is not always the fastest choice. If a burst reserves
-the whole buffer, the next equally sized burst must wait until every lane's
-reservation count reaches zero. The buffer then has to wait for new read data.
-With default timing settings, depth 8 with eight-beat reads can cause this full-drain
-gap. Depth 3 defaults to two-beat reads, so it does not require a full drain for the next burst.
-Misalignment, page splits, or shorter transfers can also make bursts smaller.
+The largest allowed burst is not always the fastest choice. Another equally sized
+burst must wait until enough space is free in every lane, which can leave a gap
+while new read data arrives. The spare entry prevents a completely full-buffer
+reservation, but does not necessarily hide read latency.
 
 As a starting point, try a read limit of about **half the buffer depth**, rounded
 down to a power of two and at least one beat:
 
-| `BufferDepth` | Default maximum beats | Suggested starting limit | `src_max_llen` |
+| `BufferDepth` | Default maximum full-width beats | Suggested starting limit | `src_max_llen` |
 |---------------|-----------------------|--------------------------|----------------|
-| 2 | 2 | 1 | 0 |
+| 2 | 1 | 1 | 0 |
 | 3 | 2 | 1 | 0 |
-| 8 | 8 | 4 | 2 |
-| 16 | 16 | 8 | 3 |
+| 8 | 7 | 4 | 2 |
+| 16 | 15 | 8 | 3 |
+
+The table assumes aligned full-width beats and no smaller protocol limit. Narrower
+AXI sizes can fit more beats in the same byte capacity.
 
 Set `src_reduce_len=1` to apply the smaller limit; safe mode remains enabled.
 For example, with depth 8:

@@ -35,7 +35,7 @@ This frontend defaults to INCR on both sides. Set `conf.src_fixed` or
 [Burst Selection](#burst-selection).
 
 1. **Write transfer parameters**: Set `src_addr`, `length`, `dst_addr`, and optionally `reps`/`src_stride`/`dst_stride` for 2D mode
-2. **Write configuration**: Set `conf` with the desired decouple flags, protocol and burst selection, and ND mode enable. For an on-the-fly compute transfer also set `compute_cfg` (see below). Stream selection is implicit in which `next_id[stream]` register you read in the next step
+2. **Write configuration**: Set `conf` with coupling, burst limits, protocol and burst selection, ND mode, and optional runtime sizes. For an on-the-fly compute transfer also set `compute_cfg` (see below). Stream selection is implicit in which `next_id[stream]` register you read in the next step
 3. **Read `next_id[stream]`**: This read attempts to atomically queue the transfer on the selected stream. A nonzero result is the assigned transfer ID. A zero result means no transfer was queued and the launch must be retried. Launches are rejected if the compute op is not enabled by `ComputeOps` (including reserved op codes), an MX launch breaks a rule of [MX Scale Plane Registers](#mx-scale-plane-registers), another register port wins simultaneous launch arbitration, or the launch FIFO cannot accept the request
 4. **Poll `done_id[stream]`**: Wait until `done_id >= next_id` to confirm completion
 
@@ -59,7 +59,7 @@ Registers are 32 bits wide. 64-bit values (addresses, lengths, strides) occupy a
 | `dst_addr` | R/W | Destination address for the next transfer |
 | `length` | R/W | Transfer length in bytes |
 
-**Configuration** - controls decoupling, burst limits, protocol selection, and ND mode:
+**Configuration** - controls coupling, burst limits, protocol selection, ND mode, safe mode, and endpoint sizes:
 
 | Register | Access | Description |
 |----------|--------|-------------|
@@ -100,7 +100,33 @@ The bit positions of `enable_nd` and the protocol fields depend on the number of
 | 19 | 17 | 18 | `deadlock_free` | Reserve data-buffer space before issuing read requests |
 | 22 | 22 | 22 | `src_fixed` | Source burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint. |
 | 23 | 23 | 23 | `dst_fixed` | Destination burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint. |
+| 24 | 24 | 24 | `src_size_enable` | Use src_size for AXI reads; when clear, use the physical bus width |
+| 25 | 25 | 25 | `dst_size_enable` | Use dst_size for AXI writes; when clear, use the physical bus width |
+| 28:26 | 28:26 | 28:26 | `src_size` | AXI read size as log2(bytes per beat), 0 through 7; must not exceed the physical bus width. Ignored when src_size_enable is clear. Length remains a payload byte count; excess bytes from the final read are discarded. |
+| 31:29 | 31:29 | 31:29 | `dst_size` | AXI write size as log2(bytes per beat), 0 through 7; must not exceed the physical bus width. Ignored when dst_size_enable is clear. Length remains a payload byte count; the final write uses partial strobes when needed. |
 <!-- END GENERATED reg_conf -->
+
+### Runtime AXI Sizes
+
+The runtime-size fields have fixed positions in every frontend variant:
+`src_size_enable` at bit 24, `dst_size_enable` at bit 25, `src_size` at bits 28:26,
+and `dst_size` at bits 31:29. All reset to zero. Each enable is independent: when
+clear, its size field is ignored and that endpoint uses the physical bus width,
+even if the raw field contains an otherwise unsupported size.
+
+An enabled size uses AXI encoding, `bytes_per_beat = 1 << size`, and must fit the
+backend bus width. `length` still counts payload bytes; it need not be a multiple
+of either endpoint size. Prefix/final excess read bytes are discarded and partial
+writes use WSTRB. LLEN remains a limit in **beats**, so changing size changes its
+byte limit. See [Runtime AXI Sizes](../../backend/#runtime-axi-sizes) for alignment,
+read side effects, byte-stream packing, and safe-mode behavior.
+
+Size enables require the hardware legalizer, separate shifters, no compute on the
+request, and runtime-size support on each enabled endpoint (currently AXI only).
+The size controls apply independently of INCR/FIXED selection. The descriptor
+frontend also exposes size controls; the instruction frontend leaves them clear.
+Configuration is sampled when a launch succeeds, so later writes do not alter
+an already queued request.
 
 ### Burst Selection
 
@@ -118,8 +144,9 @@ They have the same positions in every supported register variant.
 The modes are captured with each successful launch. Changing `conf` does not
 change an already queued job. Clear the bits again for a later INCR copy.
 
-FIXED requires a compatible AXI endpoint and a bus-width-aligned address.
-`length` remains a byte count. For example, on a 64-bit bus, a 24-byte transfer
+FIXED requires a compatible AXI endpoint and an address aligned to the selected
+beat size (the physical bus width when sizing is disabled). `length` remains a
+byte count. For example, on a 64-bit bus with sizing disabled, a 24-byte transfer
 with `src_fixed=1` reads three eight-byte beats from the same source address.
 Ordinary memory returns the same bytes each time; a streaming peripheral may
 return new data. Repeated writes to ordinary memory overwrite earlier values.
@@ -127,7 +154,7 @@ return new data. Repeated writes to ordinary memory overwrite earlier values.
 FIXED bursts contain at most 16 beats. Longer transfers split into multiple
 bursts without advancing that endpoint's address; smaller user burst limits and
 safe-mode read limits still apply. A partial final write uses byte strobes; a
-partial final read still accesses a whole bus word. Check peripheral side effects
+partial final read still accesses a whole selected-size beat. Check peripheral side effects
 before using partial lengths. FIXED alone does not prevent deadlocks.
 For ND transfers, strides still select the base address of each 1D transfer.
 See [FIXED Bursts](../../backend/#fixed-bursts) for backend details.
@@ -143,11 +170,11 @@ space for all data a burst will return before issuing it. This differs from
 setting a small `src_max_llen`: several short bursts can still fill the buffer
 if there is no space check. Smaller user burst limits remain in effect.
 
-The default is the largest power-of-two read burst that fits in the buffer. A
-full-buffer burst can force the next one to wait for a full drain. For depth 8,
-try also setting `src_reduce_len=1` and `src_max_llen=2` for four-beat reads. This
-allows earlier reads but adds address transactions; measure it against the default.
-See [Choosing a Read Burst Limit](../../backend/#choosing-a-read-burst-limit).
+The default byte limit is `(BufferDepth - 1) * StrbWidth`, before subtracting
+any first-beat prefix. With depth 8 and full-width aligned accesses, this allows
+seven beats. Try `src_reduce_len=1` and `src_max_llen=2` for four-beat reads:
+this can allow earlier reads but adds address transactions. Measure it against
+the default. See [Choosing a Read Burst Limit](../../backend/#choosing-a-read-burst-limit).
 
 The mode requires `HardwareLegalizer=1`; otherwise the bit is ignored. It is
 independent of `decouple_aw`. It cannot rescue an earlier unsafe
@@ -272,6 +299,32 @@ tid = read(next_id_0);
 // 4. Poll for completion
 while (read(done_id_0) < tid);
 ```
+
+## Worked Example: Different AXI Sizes
+
+On a 64-bit AXI backend, copy six bytes from `0x1004` using four-byte reads to
+`0x2002` using two-byte writes. Both endpoints use INCR; compute is disabled and
+the backend has `HardwareLegalizer=1`, `CombinedShifter=0`:
+
+```c
+write(src_addr_low, 0x1004);
+write(dst_addr_low, 0x2002);
+write(length_low, 6);
+// For 64-bit address/length registers, also write their high words to zero.
+write(compute_cfg, 0);  // Plain copy, if the compute register is present.
+write(conf, (1u << 24) | (1u << 25) | (2u << 26) | (1u << 29));
+
+do {
+    tid = read(next_id_0);
+} while (tid == 0);  // A rejected launch has not submitted a transfer.
+while (read(done_id_0) < tid);  // This short example does not cross ID rollover.
+```
+
+The reads access four bytes at `0x1004` and four at `0x1008`; the final two bytes
+of the second access are discarded. The writes carry two bytes each at `0x2002`,
+`0x2004`, and `0x2006`, with WSTRB `0x0C`, `0x30`, and `0xC0`. Bytes outside the
+six-byte destination remain untouched. These are beat sequences; burst grouping
+may also be restricted by LLEN and safe-mode settings.
 
 ## Worked Example: 2D Transfer
 
