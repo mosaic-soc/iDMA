@@ -56,6 +56,11 @@ frontends expose the option in `conf`; descriptors use flag bit 24. The instruct
 frontend currently leaves it off. See
 [Deadlock-Free Mode](../../architecture/backend/#deadlock-free-mode) for details.
 
+When building requests for normal copies, set both `opt.src.burst` and
+`opt.dst.burst` to `axi_pkg::BURST_INCR`. Clearing the request to zero does not
+do this: zero selects FIXED, which repeats one address. See
+[FIXED Bursts](../../architecture/backend/#fixed-bursts) for repeated-address transfers.
+
 All iDMA modules use a single clock (`clk_i`) and synchronous active-low reset (`rst_ni`). The clock must be the same for all three layers (frontend, midend, backend) and the attached memory system.
 
 Wire the three layers together. The key connections are:

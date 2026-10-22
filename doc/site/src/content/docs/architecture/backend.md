@@ -126,17 +126,79 @@ The legalizer is pure control path: it does not touch the data. It computes page
 
 | Protocol | Burst Mode | Page Size | Max Beats |
 |----------|-----------|-----------|-----------|
-| AXI | `split_at_page_boundary` | 4096 B | 256 |
+| AXI INCR | Address increases after each beat | 4096 B | 256 |
+| AXI FIXED | Every beat uses the same address | Repeated access stays within one page | 16 |
 | TileLink | `only_pow2` | 2048 B | Power-of-2 sized |
 | OBI | `not_supported` (single-beat) | StrbWidth | 1 |
 | INIT | `not_supported` (single-beat) | StrbWidth | 1 |
 | AXI Stream | `not_supported` (single-beat) | StrbWidth | 1 |
 
-For AXI, the legalizer ensures bursts do not cross 4 KiB page boundaries and respect the 256-beat maximum. TileLink uses power-of-2 aligned bursts with a 2048 B page size (limited by the TLToAXI4 bridge for AXI compliance); in TLToAXI4 compatibility mode, write bursts are further limited to 32 beats and never cross page boundaries. For non-bursting protocols (OBI, INIT, AXI Stream), each transfer is a single bus-width beat. The effective page size is `min(max_beats * StrbWidth, page_size)`.
+AXI INCR bursts stop at 4 KiB page boundaries and contain at most 256 beats. AXI
+FIXED bursts repeat the same address and contain at most 16 beats. Read and write
+bursts are split independently; a page split on one side does not force a split
+on the other side.
+
+TileLink uses power-of-2 aligned bursts with a 2048 B page size (limited by the TLToAXI4 bridge for AXI compliance); in TLToAXI4 compatibility mode, write bursts are further limited to 32 beats and never cross page boundaries. For non-bursting protocols (OBI, INIT, AXI Stream), each burst is a single bus-width beat.
+
+### FIXED Bursts
+
+A FIXED burst accesses the **same address on every beat**. It is useful for a
+peripheral that supplies or accepts a stream of data through one address.
+Source and destination modes can be selected separately:
+
+| Source | Destination | Result |
+|--------|-------------|--------|
+| FIXED | INCR | Read repeatedly from one address and write to consecutive addresses |
+| INCR | FIXED | Read from consecutive addresses and write repeatedly to one address |
+| FIXED | FIXED | Read and write repeatedly at the two given addresses |
+
+Set `request.opt.src.burst` and `request.opt.dst.burst` to
+`axi_pkg::BURST_FIXED` or `axi_pkg::BURST_INCR`. Only AXI currently supports FIXED
+in the backend. Use INCR for other protocols. WRAP is not supported; the hardware
+legalizer asserts on an unsupported burst mode.
+
+**Set both burst fields explicitly.** Their zero value is FIXED, not INCR. A
+zero-initialized request therefore does not describe a normal sequential copy.
+The register frontend defaults to INCR and exposes FIXED through `conf.src_fixed`
+and `conf.dst_fixed`. The instruction frontend and RT midend explicitly select
+INCR. The descriptor frontend exposes both burst fields to software.
+
+This implementation uses full bus-width AXI beats. For FIXED accesses, align the
+address to `DataWidth / 8` bytes. `length` is the number of bytes to transfer, not
+the number of times to access the address. A final partial write uses byte strobes
+to leave the other bytes untouched. A final partial read still reads a whole bus
+word and discards the unused bytes. Check that this is suitable for the peripheral.
+
+For example, on a 64-bit bus, a 24-byte FIXED-to-INCR transfer reads three times
+from `0x1000` and writes eight bytes each at `0x2000`, `0x2008`, and `0x2010`.
+Ordinary memory returns the same eight bytes on each read. A peripheral may return
+new data each time. With a FIXED destination in ordinary memory, later writes
+overwrite earlier ones; only the last value of each written byte remains.
+
+A transfer longer than 16 beats is split into several FIXED bursts, all starting
+at the original address. With no smaller user or safe-mode limit, 40 beats become
+bursts of 16, 16, and 8 beats.
+The address does not advance when a burst finishes. Payload length alone does not
+cause a page split, since every beat accesses the same word.
+
+User burst limits still apply. If `src_reduce_len` or `dst_reduce_len` is set,
+that side uses at most `2^max_llen` beats per burst, capped at 16 for FIXED.
+For example, `src_max_llen=2` limits FIXED read bursts to four beats. Safe mode
+may further limit read bursts and waits for enough free buffer space before
+issuing them. FIXED does not by itself prevent deadlocks; use `deadlock_free`
+when the memory system needs it.
+
+The generator reads `supports_fixed_bursts` and `max_beats_per_fixed_burst` from
+each protocol's YAML file in `src/db/`. These settings control the generated
+protocol checks and FIXED burst limit.
 
 If `HardwareLegalizer=1` and software submits a transfer crossing a page boundary, the legalizer splits it automatically. With `HardwareLegalizer=0`, such a transfer would violate the protocol and cause undefined bus behavior.
 
-**Example**: A 5000-byte AXI transfer starting at address `0xFF8`. The 4 KiB page boundary is at `0x1000`, only 8 bytes away. The legalizer emits: burst 1 (8 bytes at `0xFF8` - reaches page boundary), burst 2 (4096 bytes at `0x1000`), burst 3 (896 bytes at `0x2000`). Each burst stays within a single 4 KiB page and respects the 256-beat limit.
+**INCR example**: A 5000-byte transfer using a 128-bit AXI bus starts at `0xFF8`.
+With no user burst reduction or safe-mode limit, the bursts carry 8 bytes at
+`0xFF8`, 4096 bytes at `0x1000`, and 896 bytes at `0x2000`. Each stays within one
+4 KiB page and uses at most 256 beats. The 16-byte beat size matters: a narrower
+bus needs more bursts to transfer the same number of bytes.
 
 ### Datapath Control Signals
 
@@ -148,6 +210,9 @@ When `HardwareLegalizer=0`, the legalizer is bypassed and replaced with a simple
 
 `deadlock_free` has no effect in this configuration. Software burst splitting
 alone does not provide the read-buffer checks described below.
+
+For FIXED, software must also keep each burst within the 16-beat limit and keep
+the address unchanged when splitting a longer transfer.
 
 ## Transport Layer
 

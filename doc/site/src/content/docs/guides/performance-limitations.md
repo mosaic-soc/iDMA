@@ -9,7 +9,10 @@ This guide summarizes practical constraints and tradeoffs that impact performanc
 
 ## Alignment and Burst Limits
 
-- AXI bursts cannot cross 4 KiB boundaries.
+- AXI INCR bursts stop at 4 KiB boundaries and use at most 256 beats.
+- AXI FIXED bursts repeat one bus-width-aligned address and use at most 16 beats.
+  Longer transfers use several bursts at that same address. Use INCR explicitly
+  for normal copies: a zero burst field selects FIXED.
 - TileLink bursts are power-of-2 and limited by TLToAXI4 behavior.
 - OBI and INIT are single-beat protocols.
 

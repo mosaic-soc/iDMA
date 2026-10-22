@@ -185,6 +185,14 @@ Selected self-checking testbenches also have behavioral Verilator targets. Use
 or `idma_sim_vlt_all` to run all of them. Their independent build directories live
 under `target/sim/vlt/`.
 
+### FIXED Burst Tests
+
+`test/tb_idma_backend_fixed_burst.sv` is a handwritten AXI backend testbench.
+It covers FIXED reads, FIXED writes, and FIXED on both sides. Cases include
+transfers longer than 16 beats, smaller user burst limits, partial final beats,
+and an INCR side that crosses a 4 KiB boundary. These are full bus-width accesses;
+a short transfer length does not select a smaller AXI beat size.
+
 ## Running Simulations
 
 `idma.mk` wires three simulators. Questa and VCS run the full job-file testbenches. Verilator is used separately for lint/elaboration and for behavioral simulation of selected self-checking testbenches. Each flow takes its tool binaries as make variables, whose defaults are the bare `vsim` / `vcs` / `verilator` names; the Questa examples below use the `questa-2023.4` SEPP wrapper.

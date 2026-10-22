@@ -38,8 +38,8 @@ If the CPU uses a data cache, descriptors must be in an uncached or cache-cohere
 | Bits | Field | Description |
 |------|-------|-------------|
 | 0 | `irq` | Trigger interrupt on completion |
-| 2:1 | `src_burst` | Source burst type: 00=FIXED, 01=INCR, 10=WRAP |
-| 4:3 | `dst_burst` | Destination burst type: 00=FIXED, 01=INCR, 10=WRAP |
+| 2:1 | `src_burst` | Source burst type: 00=FIXED, 01=INCR; WRAP is unsupported by the backend |
+| 4:3 | `dst_burst` | Destination burst type: 00=FIXED, 01=INCR; WRAP is unsupported by the backend |
 | 5 | — | Reserved; must be zero |
 | 6 | `decouple_aw` | Safer decoupling: write *addresses* are held back until the first read data arrives, but once data starts flowing, reads and writes proceed independently |
 | 7 | `reduce_len` | Reduce burst length on both source and destination (`opt.beo.src_reduce_len` + `opt.beo.dst_reduce_len`) |
@@ -69,10 +69,26 @@ an earlier transfer that is already stuck. Use it on every transfer that needs
 the protection. The flag has no effect with `HardwareLegalizer=0`. See
 [Deadlock-Free Mode](../../backend/#deadlock-free-mode) for details.
 
-**Typical flags values**: `0x0000000A` selects INCR on both sides, with no IRQ;
-`0x0000000B` also requests an IRQ; `0x0000004B` also enables R-AW coupling;
-`0x0100000A` selects deadlock-free INCR transfers. Set the burst fields explicitly:
-zero does not select INCR. This backend requires INCR on both sides.
+**Set both burst fields explicitly.** Zero flags select FIXED on both sides, not
+INCR. For normal copies, use `0x0000000A`: bit 1 selects source INCR and bit 3
+selects destination INCR.
+
+| Flags | Behavior |
+|-------|----------|
+| `0x0000000A` | INCR to INCR, no IRQ |
+| `0x0000000B` | INCR to INCR, IRQ on completion |
+| `0x0000004B` | INCR to INCR, R-AW coupling and IRQ |
+| `0x0100000A` | INCR to INCR, deadlock-free mode |
+| `0x00000008` | FIXED source to INCR destination |
+| `0x00000002` | INCR source to FIXED destination |
+| `0x00000000` | FIXED source and FIXED destination |
+
+For FIXED accesses, use a bus-width-aligned address. For example, on a 64-bit bus,
+a 24-byte transfer with flags `0x00000008` reads three eight-byte beats from the
+same source address and writes them to consecutive destination addresses. The
+backend splits longer FIXED transfers into bursts of at most 16 beats, keeping
+the original address. See [FIXED Bursts](../../backend/#fixed-bursts) for partial
+beats and peripheral access side effects.
 
 ## Descriptor Chain Example
 

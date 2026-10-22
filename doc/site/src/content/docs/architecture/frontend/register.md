@@ -30,8 +30,12 @@ A thin wrapper (`src/frontend/reg/tpl/idma_reg.sv.tpl`, rendered by MARIO for th
 
 ## Programming Sequence
 
+This frontend defaults to INCR on both sides. Set `conf.src_fixed` or
+`conf.dst_fixed` for repeated reads or writes at one address; see
+[Burst Selection](#burst-selection).
+
 1. **Write transfer parameters**: Set `src_addr`, `length`, `dst_addr`, and optionally `reps`/`src_stride`/`dst_stride` for 2D mode
-2. **Write configuration**: Set `conf` with the desired decouple flags, protocol selection, and ND mode enable. For an on-the-fly compute transfer also set `compute_cfg` (see below). Stream selection is implicit in which `next_id[stream]` register you read in the next step
+2. **Write configuration**: Set `conf` with the desired decouple flags, protocol and burst selection, and ND mode enable. For an on-the-fly compute transfer also set `compute_cfg` (see below). Stream selection is implicit in which `next_id[stream]` register you read in the next step
 3. **Read `next_id[stream]`**: This read attempts to atomically queue the transfer on the selected stream. A nonzero result is the assigned transfer ID. A zero result means no transfer was queued and the launch must be retried. Launches are rejected if the compute op is not enabled by `ComputeOps` (including reserved op codes), an MX launch breaks a rule of [MX Scale Plane Registers](#mx-scale-plane-registers), another register port wins simultaneous launch arbitration, or the launch FIFO cannot accept the request
 4. **Poll `done_id[stream]`**: Wait until `done_id >= next_id` to confirm completion
 
@@ -94,7 +98,39 @@ The bit positions of `enable_nd` and the protocol fields depend on the number of
 | 15:13 | 13:11 | 14:12 | `src_protocol` | Source protocol (idma_pkg::protocol_e) |
 | 18:16 | 16:14 | 17:15 | `dst_protocol` | Destination protocol (idma_pkg::protocol_e) |
 | 19 | 17 | 18 | `deadlock_free` | Reserve data-buffer space before issuing read requests |
+| 22 | 22 | 22 | `src_fixed` | Source burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint. |
+| 23 | 23 | 23 | `dst_fixed` | Destination burst mode: 0 INCR, 1 FIXED. FIXED requires a compatible AXI endpoint. |
 <!-- END GENERATED reg_conf -->
+
+### Burst Selection
+
+`conf.src_fixed` (bit 22) and `conf.dst_fixed` (bit 23) select the source and
+destination burst modes independently. Both reset to zero, preserving INCR copies.
+They have the same positions in every supported register variant.
+
+| `src_fixed` | `dst_fixed` | Behavior |
+|-------------|-------------|----------|
+| 0 | 0 | Read and write consecutive addresses (INCR) |
+| 1 | 0 | Read repeatedly from one address; write consecutive addresses |
+| 0 | 1 | Read consecutive addresses; write repeatedly to one address |
+| 1 | 1 | Read and write repeatedly at their respective addresses |
+
+The modes are captured with each successful launch. Changing `conf` does not
+change an already queued job. Clear the bits again for a later INCR copy.
+
+FIXED requires a compatible AXI endpoint and a bus-width-aligned address.
+`length` remains a byte count. For example, on a 64-bit bus, a 24-byte transfer
+with `src_fixed=1` reads three eight-byte beats from the same source address.
+Ordinary memory returns the same bytes each time; a streaming peripheral may
+return new data. Repeated writes to ordinary memory overwrite earlier values.
+
+FIXED bursts contain at most 16 beats. Longer transfers split into multiple
+bursts without advancing that endpoint's address; smaller user burst limits and
+safe-mode read limits still apply. A partial final write uses byte strobes; a
+partial final read still accesses a whole bus word. Check peripheral side effects
+before using partial lengths. FIXED alone does not prevent deadlocks.
+For ND transfers, strides still select the base address of each 1D transfer.
+See [FIXED Bursts](../../backend/#fixed-bursts) for backend details.
 
 ### Enabling Deadlock-Free Mode
 

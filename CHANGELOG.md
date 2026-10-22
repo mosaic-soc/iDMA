@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Expose the option through the register frontend's `conf` register, descriptor
   flag bit 24, and `backend_options_t`. Requests with the mode off are still
   counted, so queued transfers can use different settings.
+- AXI FIXED bursts: read or write repeatedly at one address. Source and destination
+  modes are independent. Longer transfers split into bursts of at most 16 beats,
+  keeping the same address. User burst limits can make the bursts shorter.
+- A fixed-burst backend testbench covers reads, writes, long transfers, partial
+  final beats, user burst limits, and page crossings on the INCR side.
+- Register-frontend FIXED selection through `conf.src_fixed` (bit 22) and
+  `conf.dst_fixed` (bit 23). Both default to INCR and are captured per queued job.
+  Frontend tests cover all combinations and configuration changes while queued.
+
+### Fixed
+- The RT midend explicitly selects INCR bursts for sequential transfers. A zero
+  AXI burst field means FIXED; custom request producers must select INCR explicitly.
 
 ## 0.7.4 - 2026-10-06
 
