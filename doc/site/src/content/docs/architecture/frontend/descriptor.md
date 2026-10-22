@@ -40,14 +40,16 @@ If the CPU uses a data cache, descriptors must be in an uncached or cache-cohere
 | 0 | `irq` | Trigger interrupt on completion |
 | 2:1 | `src_burst` | Source burst type: 00=FIXED, 01=INCR; WRAP is unsupported by the backend |
 | 4:3 | `dst_burst` | Destination burst type: 00=FIXED, 01=INCR; WRAP is unsupported by the backend |
-| 5 | — | Reserved; must be zero |
+| 5 | `src_size_enable` | Apply `src_size`; otherwise read at physical bus width |
 | 6 | `decouple_aw` | Safer decoupling: write *addresses* are held back until the first read data arrives, but once data starts flowing, reads and writes proceed independently |
 | 7 | `reduce_len` | Reduce burst length on both source and destination (`opt.beo.src_reduce_len` + `opt.beo.dst_reduce_len`) |
 | 11:8 | `src_cache` | AXI cache attributes for source (bufferable, modifiable, read-alloc, write-alloc) |
 | 15:12 | `dst_cache` | AXI cache attributes for destination |
 | 23:16 | `axi_id` | AXI ID for the transfer |
 | 24 | `deadlock_free` | Reserve byte-lane data-buffer capacity before issuing each read request |
-| 31:25 | — | Reserved |
+| 25 | `dst_size_enable` | Apply `dst_size`; otherwise write at physical bus width |
+| 28:26 | `src_size` | log2(bytes per AXI read beat), ignored when source enable is clear |
+| 31:29 | `dst_size` | log2(bytes per AXI write beat), ignored when destination enable is clear |
 
 Set flag bit 24 to enable deadlock-free mode for that descriptor, for example
 `flags |= (1u << 24)`. It is off when the bit is clear. Leave all other flags as
@@ -83,12 +85,55 @@ selects destination INCR.
 | `0x00000002` | INCR source to FIXED destination |
 | `0x00000000` | FIXED source and FIXED destination |
 
-For FIXED accesses, use a bus-width-aligned address. For example, on a 64-bit bus,
+For FIXED accesses, align the address to the selected beat size (the bus width
+by default). For example, on a 64-bit bus with size controls disabled,
 a 24-byte transfer with flags `0x00000008` reads three eight-byte beats from the
 same source address and writes them to consecutive destination addresses. The
 backend splits longer FIXED transfers into bursts of at most 16 beats, keeping
 the original address. See [FIXED Bursts](../../backend/#fixed-bursts) for partial
 beats and peripheral access side effects.
+
+### Runtime AXI Sizes
+
+Each endpoint has an independent enable and three-bit AXI size encoding:
+0 = 1 byte, 1 = 2 bytes, through 7 = 128 bytes. Enabled sizes must not exceed the
+backend's physical bus width. A disabled size field is ignored, even if nonzero.
+Size controls affect payload accesses only: descriptor fetches and completion
+writebacks retain their existing widths and layout.
+
+`length` remains a payload byte count. Different source/destination sizes and
+lengths that are not multiples of either size are supported. INCR addresses may
+be unaligned; FIXED addresses must be aligned to the selected size. Prefix/final
+excess read bytes are discarded, and partial writes use WSTRB. Software must allow
+those complete selected-size read accesses and account for peripheral side effects.
+
+Enabled size controls require `HardwareLegalizer=1`, `CombinedShifter=0`, and no
+compute on the request. AXI currently implements runtime-size support; backend
+assertions validate enabled sizes and supported configurations. Each descriptor's
+flags travel with its request, so a chain may change sizes and safe mode between
+transfers, including while older transfers are still pending.
+
+The descriptor remains 32 bytes with 64-bit addresses. Source enable reuses the
+former reserved bit 5; destination enable and sizes use bits 31:25. Existing
+descriptors with these reserved bits cleared retain full-width behavior; no AXI
+ID bits or other existing fields are repurposed.
+
+For example, copy six bytes with four-byte INCR reads and two-byte INCR writes:
+
+```c
+// Descriptor payload fields, not MMIO register writes.
+src_addr = 0x1004;
+dest_addr = 0x2002;
+length = 6;
+flags = (1u << 1) | (1u << 3)   // Source/destination INCR.
+      | (1u << 5) | (1u << 25)  // Independent size enables.
+      | (2u << 26) | (1u << 29); // Four-byte reads, two-byte writes.
+// flags = 0x2A00002A; add bit 24 to enable deadlock-free mode.
+```
+
+The second read accesses four bytes at `0x1008` but forwards only its first two;
+the destination receives two-byte writes at `0x2002`, `0x2004`, and `0x2006`.
+Burst grouping remains subject to protocol limits, `reduce_len`, and safe mode.
 
 ## Descriptor Chain Example
 

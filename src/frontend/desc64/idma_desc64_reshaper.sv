@@ -28,7 +28,7 @@ always_comb begin
         idma_req_o.src_addr               = descriptor_i.src_addr;
         idma_req_o.dst_addr               = descriptor_i.dest_addr;
 
-        // Current backend only supports one ID
+        // The descriptor carries an eight-bit ID; assignment uses the configured ID width.
         idma_req_o.opt.axi_id             = descriptor_i.flags[23:16];
         idma_req_o.opt.src.burst          = descriptor_i.flags[2:1];
         idma_req_o.opt.src.cache          = descriptor_i.flags[11:8];
@@ -51,18 +51,19 @@ always_comb begin
         // only one region in system
         idma_req_o.opt.dst.region         = '0;
         idma_req_o.opt.beo.decouple_aw    = descriptor_i.flags[6];
-        // this frontend currently only supports completely debursting
+        // With reduce_len set, zero LLEN restricts both endpoints to one beat.
+        // Otherwise these limits are ignored by the legalizer.
         idma_req_o.opt.beo.src_max_llen   = '0;
-        // this frontend currently only supports completely debursting
         idma_req_o.opt.beo.dst_max_llen   = '0;
         idma_req_o.opt.beo.src_reduce_len = descriptor_i.flags[7];
         idma_req_o.opt.beo.dst_reduce_len = descriptor_i.flags[7];
         idma_req_o.opt.beo.deadlock_free  = descriptor_i.flags[24];
-        // The descriptor format does not yet encode runtime AXI sizes.
-        idma_req_o.opt.beo.src_size_enable = 1'b0;
-        idma_req_o.opt.beo.dst_size_enable = 1'b0;
-        idma_req_o.opt.beo.src_size        = '0;
-        idma_req_o.opt.beo.dst_size        = '0;
+        // Reuse the former reserved bit 5 for the source enable; bit 24 remains
+        // deadlock_free. Old descriptors with reserved bits clear stay full-width.
+        idma_req_o.opt.beo.src_size_enable = descriptor_i.flags[5];
+        idma_req_o.opt.beo.dst_size_enable = descriptor_i.flags[25];
+        idma_req_o.opt.beo.src_size        = descriptor_i.flags[28:26];
+        idma_req_o.opt.beo.dst_size        = descriptor_i.flags[31:29];
 end
 
 endmodule
